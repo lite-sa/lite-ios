@@ -2,8 +2,8 @@
 import PackageDescription
 
 // LiteSDK — native iOS SDK for Lite Checkout (Path B: truly-native card fields).
-// See ../DESIGN.md for the full design. Core + Crypto build on the macOS host;
-// LiteSDKUI (card fields + Apple Pay) is real on iOS via `#if canImport(UIKit)`.
+// Core + Crypto build on the macOS host; LiteSDKUI (card fields + Apple Pay)
+// is real on iOS via `#if canImport(UIKit)`.
 let package = Package(
     name: "LiteSDK",
     platforms: [
@@ -11,11 +11,11 @@ let package = Package(
         .macOS(.v13), // enables `swift test` on the host while iOS UI is not yet in scope
     ],
     products: [
-        // The umbrella product merchants depend on — `import LiteSDK`.
+        // The only product, and deliberately so. Core, Crypto and UI stay
+        // targets: vending them would let a merchant `import LiteSDKCrypto`
+        // and make every public symbol in them API we cannot change. One
+        // umbrella keeps the supported surface to `import LiteSDK`.
         .library(name: "LiteSDK", targets: ["LiteSDK"]),
-        .library(name: "LiteSDKCore", targets: ["LiteSDKCore"]),
-        .library(name: "LiteSDKCrypto", targets: ["LiteSDKCrypto"]),
-        .library(name: "LiteSDKUI", targets: ["LiteSDKUI"]),
     ],
     targets: [
         // Umbrella: re-exports Core + UI so a single `import LiteSDK` is enough.
