@@ -47,7 +47,7 @@ final class OpenedCheckoutTests: XCTestCase {
         XCTAssertEqual(
             opened,
             .terminal(
-                status: .failure,
+                status: .alreadyCompleted,
                 paymentId: "pay_1",
                 error: CheckoutSessionStatus.alreadyCompletedMessage
             )
@@ -63,7 +63,7 @@ final class OpenedCheckoutTests: XCTestCase {
         XCTAssertEqual(
             opened,
             .terminal(
-                status: .failure,
+                status: .alreadyCompleted,
                 paymentId: "pay_9",
                 error: CheckoutSessionStatus.alreadyCompletedMessage
             )
@@ -174,7 +174,7 @@ private final class ClassifyHTTPStub: URLProtocol {
         urls = []
     }
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canInit(with _: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
@@ -194,5 +194,7 @@ private final class ClassifyHTTPStub: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        // Responses are delivered synchronously, so there is no work to cancel.
+    }
 }

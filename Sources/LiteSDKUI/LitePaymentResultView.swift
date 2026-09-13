@@ -21,6 +21,8 @@ public enum LitePaymentResultKind: Sendable, CaseIterable, Identifiable {
         switch result.status {
         case .success:
             return .success
+        case .alreadyCompleted:
+            return .alreadyCompleted
         case .processing:
             return .processing
         case .cancelled:

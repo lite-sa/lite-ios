@@ -26,8 +26,6 @@ final class LiteCardAggregator: ObservableObject {
     private var fields: [CardElementType: Weak] = [:]
     private var lastCardNumberRaw: String = ""
 
-    init() {}
-
     /// True when all required fields are currently valid.
     var isComplete: Bool {
         Self.requiredFields.allSatisfy { validity[$0] == true }

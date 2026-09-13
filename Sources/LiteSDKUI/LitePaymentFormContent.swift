@@ -4,6 +4,11 @@ import UIKit
 import ObjectiveC
 import LiteSDKCore
 
+private struct LiteTerminalResultNotificationID: Equatable {
+    let result: Lite.PayResult?
+    let isTerminalSession: Bool
+}
+
 /// Shared payment body — Figma Bottom Sheet + web checkout accordion pattern:
 /// saved cards as rows; “Pay with a new card” nests logos + fields when selected.
 public struct LitePaymentFormContent: View {
@@ -64,24 +69,36 @@ public struct LitePaymentFormContent: View {
     public var body: some View {
         let skipFormForTerminalSession = lite.lastPayResult != nil
             && CheckoutSessionStatus.isTerminal(lite.session?.status)
+        let terminalNotificationID = LiteTerminalResultNotificationID(
+            result: lite.lastPayResult,
+            isTerminalSession: skipFormForTerminalSession
+        )
         Group {
-            if (showResultInline || skipFormForTerminalSession), let result = lite.lastPayResult {
+            if showResultInline, let result = lite.lastPayResult {
                 LitePaymentResultView(
                     result: result,
-                    onDismiss: onClose,
+                    onDismiss: nil,
                     config: LitePaymentResultConfig(
                         amountMinor: lite.session?.amount,
-                        currency: lite.session?.currency
+                        currency: lite.session?.currency,
+                        showCloseButton: false
                     )
                 )
-                .onAppear {
-                    guard skipFormForTerminalSession, !didNotifyTerminalResult else { return }
-                    didNotifyTerminalResult = true
-                    onPayResult?(result)
-                }
+            } else if skipFormForTerminalSession {
+                EmptyView()
             } else {
                 formBody
             }
+        }
+        .task(id: terminalNotificationID) {
+            guard let result = terminalNotificationID.result else {
+                didNotifyTerminalResult = false
+                return
+            }
+            guard terminalNotificationID.isTerminalSession,
+                  !didNotifyTerminalResult
+            else { return }
+            notifyPayResult(result)
         }
         .liteFixedColorScheme()
     }
@@ -164,15 +181,15 @@ public struct LitePaymentFormContent: View {
 
     @ViewBuilder
     private var paymentMethodsSection: some View {
-        // Figma sheet column: major sections spaced 24px (Express → Card → Secure)
+        let showsExpressPaymentMethod = hasExpressPaymentMethod
         VStack(alignment: .leading, spacing: LiteTheme.Spacing.xl) {
             #if canImport(PassKit)
-            if applePayEnabled, lite.isApplePayAvailable {
+            if showsExpressPaymentMethod {
                 expressPaymentSection
             }
             #endif
 
-            cardPaymentSection
+            cardPaymentSection(showAlternativeLabel: showsExpressPaymentMethod)
 
             SecurePaymentFooter(
                 onPrivacyClick: onPrivacyClick,
@@ -181,23 +198,30 @@ public struct LitePaymentFormContent: View {
         }
     }
 
-    /// Figma Payment Method: label + Apple Pay button (gap 16, button h=44, radius 10).
+    private var hasExpressPaymentMethod: Bool {
+        #if canImport(PassKit)
+        return applePayEnabled && lite.isApplePayAvailable
+        #else
+        return false
+        #endif
+    }
+
+    /// Available express-payment buttons without redundant section chrome.
     @ViewBuilder
     private var expressPaymentSection: some View {
         #if canImport(PassKit)
-        VStack(alignment: .leading, spacing: LiteTheme.Spacing.m) {
-            sectionLabel(icon: LiteIcons.flash, title: "Express payment")
-            LiteApplePayButton(lite, type: .plain) { result in
-                onPayResult?(result)
-            }
+        LiteApplePayButton(lite, type: .plain) { result in
+            notifyPayResult(result)
         }
         #endif
     }
 
-    /// Figma Card Payment Methods Container: label + rows (gap 12).
-    private var cardPaymentSection: some View {
+    /// Card methods use an alternative-payment label only when an APM is visible above them.
+    private func cardPaymentSection(showAlternativeLabel: Bool) -> some View {
         VStack(alignment: .leading, spacing: LiteTheme.Spacing.s) {
-            sectionLabel(icon: LiteIcons.creditCard, title: "OR Pay with card")
+            if showAlternativeLabel {
+                sectionLabel(icon: LiteIcons.creditCard, title: "OR Pay with card")
+            }
 
             VStack(spacing: LiteTheme.Spacing.s) {
                 ForEach(lite.getStoredInstruments()) { instrument in
@@ -258,10 +282,11 @@ public struct LitePaymentFormContent: View {
                 let result = await lite.pay()
                 paying = false
                 // Stay on the form (web toaster path) — do not advance to result / dismiss.
-                if result.errorCode == LiteAPIError.paymentMethodNotSupported {
+                if result.errorCode == LiteAPIError.paymentMethodNotSupported
+                    || result.errorCode == Lite.threeDSChallengeDismissedErrorCode {
                     return
                 }
-                onPayResult?(result)
+                notifyPayResult(result)
             }
         } label: {
             Group {
@@ -293,6 +318,12 @@ public struct LitePaymentFormContent: View {
         .buttonStyle(.plain)
         .accessibilityLabel((paying || lite.phase == .paying) ? "Processing payment" : "Pay Now")
     }
+
+    private func notifyPayResult(_ result: Lite.PayResult) {
+        guard result.errorCode != Lite.threeDSChallengeDismissedErrorCode else { return }
+        didNotifyTerminalResult = true
+        onPayResult?(result)
+    }
 }
 
 // MARK: - Header
@@ -315,11 +346,9 @@ struct LiteSheetHeader: View {
                             .scaledToFit()
                             .frame(width: 12, height: 12)
                             .foregroundColor(LiteTheme.Colors.textPrimary)
-                            .frame(width: 20, height: 24)
-                            .frame(width: 36, height: 40)
+                            .frame(width: 36, height: 36)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 100, style: .continuous)
-                                    .stroke(LiteTheme.Colors.border, lineWidth: 1)
+                                Circle().stroke(LiteTheme.Colors.border, lineWidth: 0.9)
                             )
                     }
                     .buttonStyle(.plain)
@@ -575,14 +604,14 @@ private struct LiteScrollIndicatorsHidden: ViewModifier {
 
 /// iOS 15/16: hide UIScrollView indicators + disable automatic inset adjustment.
 private struct LiteHideScrollIndicators: UIViewRepresentable {
-    func makeUIView(context: Context) -> UIView {
+    func makeUIView(context _: Context) -> UIView {
         let view = UIView(frame: .zero)
         view.isUserInteractionEnabled = false
         view.backgroundColor = .clear
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
+    func updateUIView(_ uiView: UIView, context _: Context) {
         DispatchQueue.main.async {
             var parent = uiView.superview
             while let current = parent {
@@ -654,8 +683,8 @@ private struct LiteKeyboardOverlapProbe: UIViewRepresentable {
         Coordinator(inset: $inset)
     }
 
-    func makeUIView(context: Context) -> ProbeView {
-        let view = ProbeView()
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
         view.isUserInteractionEnabled = false
         view.backgroundColor = .clear
         context.coordinator.install()
@@ -663,12 +692,12 @@ private struct LiteKeyboardOverlapProbe: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: ProbeView, context: Context) {
+    func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.inset = $inset
         context.coordinator.view = uiView
     }
 
-    static func dismantleUIView(_ uiView: ProbeView, coordinator: Coordinator) {
+    static func dismantleUIView(_: UIView, coordinator: Coordinator) {
         coordinator.tearDown()
     }
 
@@ -718,7 +747,6 @@ private struct LiteKeyboardOverlapProbe: UIViewRepresentable {
         }
     }
 
-    final class ProbeView: UIView {}
 }
 
 enum LiteKeyboardDismissTap {
@@ -745,7 +773,7 @@ enum LiteKeyboardDismissTap {
         }
 
         func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
+            _: UIGestureRecognizer,
             shouldReceive touch: UITouch
         ) -> Bool {
             var view = touch.view
@@ -759,14 +787,16 @@ enum LiteKeyboardDismissTap {
 }
 
 struct LiteKeyboardDismissInstaller: UIViewRepresentable {
-    func makeUIView(context: Context) -> InstallerView {
+    func makeUIView(context _: Context) -> InstallerView {
         let view = InstallerView()
         view.isUserInteractionEnabled = false
         view.backgroundColor = .clear
         return view
     }
 
-    func updateUIView(_ uiView: InstallerView, context: Context) {}
+    func updateUIView(_: InstallerView, context _: Context) {
+        // Installation is driven by InstallerView.didMoveToWindow().
+    }
 
     final class InstallerView: UIView {
         override func didMoveToWindow() {

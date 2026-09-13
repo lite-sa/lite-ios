@@ -204,7 +204,7 @@ private struct ApplePayButtonRepresentable: UIViewRepresentable {
         }
 
         func paymentAuthorizationController(
-            _ controller: PKPaymentAuthorizationController,
+            _: PKPaymentAuthorizationController,
             didAuthorizePayment payment: PKPayment,
             handler completion: @escaping (PKPaymentAuthorizationResult) -> Void
         ) {

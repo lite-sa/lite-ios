@@ -159,7 +159,7 @@ public struct PaymentMethodLookup: Decodable, Sendable {
     private static let sessionLog = Logger(subsystem: "sa.lite.checkout", category: "session")
 
     private static func softDecode<T: Decodable>(
-        _ type: T.Type,
+        _: T.Type,
         from container: KeyedDecodingContainer<CodingKeys>,
         key: CodingKeys
     ) -> T? {

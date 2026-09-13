@@ -30,8 +30,10 @@ public final class Lite: ObservableObject {
         case storedInstrument(id: String)
     }
 
-    /// Result of `pay()`, mirroring the web `PaymentPollingResult`: the merchant branches on `status`
-    /// (`success` / `failure` / `processing` / `cancelled`). `errorCode` matches web (`errors[0].code`).
+    /// Result of `pay()` / sheet present. Merchants branch on `status`
+    /// (`success` / `failure` / `processing` / `cancelled` / `already_completed`).
+    /// `already_completed` is an opened session whose payment was already captured — not a new pay.
+    /// `errorCode` matches web (`errors[0].code`).
     public struct PayResult: Sendable, Equatable {
         public let status: PaymentOperationStatus
         public let paymentId: String?
@@ -39,6 +41,7 @@ public final class Lite: ObservableObject {
         public let errorCode: String?
         public var isSuccess: Bool { status == .success }
         public var isCancelled: Bool { status == .cancelled }
+        public var isAlreadyCompleted: Bool { status == .alreadyCompleted }
 
         public init(
             status: PaymentOperationStatus,
@@ -56,6 +59,7 @@ public final class Lite: ObservableObject {
     @Published public private(set) var phase: Phase = .idle
     @Published public private(set) var session: LiteCheckoutSession?
     @Published public private(set) var lastPayResult: PayResult?
+    @Published internal private(set) var isThreeDSActive = false
     @Published public var cardSelection: CardPaymentSelection = .newCard
     @Published public var storeForFuture = false
 
@@ -107,6 +111,7 @@ public final class Lite: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     /// Coalesces concurrent `pay*` calls onto one in-flight task (web / IOS-003).
     private var inFlightPay: Task<PayResult, Never>?
+    internal static let threeDSChallengeDismissedErrorCode = "THREE_DS_CHALLENGE_DISMISSED"
 
     public init() {
         self.threeDS = WKWebViewThreeDS()
@@ -173,6 +178,7 @@ public final class Lite: ObservableObject {
         phase = .loadingSession
         session = nil
         lastPayResult = nil
+        isThreeDSActive = false
         cardSelection = .newCard
         storeForFuture = false
         isPayLocked = false
@@ -217,6 +223,7 @@ public final class Lite: ObservableObject {
         started = nil
         session = nil
         lastPayResult = nil
+        isThreeDSActive = false
         cardSelection = .newCard
         storeForFuture = false
         isPayLocked = false
@@ -449,6 +456,13 @@ public final class Lite: ObservableObject {
                 try await presentThreeDS(redirectURL: url)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch ThreeDSPresentationError.challengeDismissed {
+                return PayResult(
+                    status: .cancelled,
+                    paymentId: result.payment?.payment.id,
+                    error: "cancelled",
+                    errorCode: Self.threeDSChallengeDismissedErrorCode
+                )
             } catch is ThreeDSURLValidator.ValidationError {
                 return recordFailure(
                     LiteError.threeDSInvalidURL.errorDescription ?? "3DS challenge URL must use HTTPS."
@@ -474,6 +488,8 @@ public final class Lite: ObservableObject {
     private static let threeDSTimeoutNanoseconds: UInt64 = 10 * 60 * 1_000_000_000
 
     private func presentThreeDS(redirectURL url: URL) async throws {
+        isThreeDSActive = true
+        defer { isThreeDSActive = false }
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask { @MainActor in
                 try await self.threeDS.present(redirectURL: url)
@@ -497,8 +513,17 @@ public final class Lite: ObservableObject {
         return payResult
     }
 
-    private func recordFailure(_ message: String, errorCode: String? = nil) -> PayResult {
-        let payResult = PayResult(status: .failure, paymentId: nil, error: message, errorCode: errorCode)
+    private func recordFailure(
+        _ message: String,
+        paymentId: String? = nil,
+        errorCode: String? = nil
+    ) -> PayResult {
+        let payResult = PayResult(
+            status: .failure,
+            paymentId: paymentId,
+            error: message,
+            errorCode: errorCode
+        )
         lastPayResult = payResult
         return payResult
     }

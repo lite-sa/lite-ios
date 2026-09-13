@@ -188,7 +188,7 @@ public enum SessionService {
             }
             if payment.status.operationStatus == .success {
                 return .terminal(
-                    status: .failure,
+                    status: .alreadyCompleted,
                     paymentId: payment.id,
                     error: CheckoutSessionStatus.alreadyCompletedMessage
                 )

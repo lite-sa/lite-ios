@@ -76,7 +76,7 @@ final class LiteCardField: UIView, UITextFieldDelegate {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    required init?(coder _: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: chrome == .plain ? 48 : 44)

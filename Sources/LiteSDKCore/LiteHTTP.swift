@@ -36,7 +36,7 @@ struct LiteHTTP {
         method: String,
         bearer: String,
         body: Data?,
-        as type: T.Type
+        as _: T.Type
     ) async throws -> T {
         guard LiteDestinationAllowlist.isAllowed(urlString) else {
             throw LiteError.malformedSessionURL

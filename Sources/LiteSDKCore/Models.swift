@@ -171,6 +171,8 @@ public enum PaymentOperationStatus: String, Sendable, Equatable {
     case failure
     case processing
     case cancelled
+    /// Opened a session whose payment was already CAPTURED/AUTHORIZED. Not a new `pay()`.
+    case alreadyCompleted = "already_completed"
 }
 
 // MARK: - Checkout session status

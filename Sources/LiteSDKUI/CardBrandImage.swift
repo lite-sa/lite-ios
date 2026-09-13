@@ -29,10 +29,11 @@ public struct CardBrandImage: View {
 
     /// Web: mada/visa `h-8.5 w-12` → 48×34; mastercard `h-7 w-10` → 40×28.
     static func logoSize(for brand: CardType) -> CGSize {
-        switch brand {
-        case .mastercard: return CGSize(width: 40, height: 28)
-        default: return CGSize(width: 48, height: 34)
+        if brand == .mastercard {
+            return CGSize(width: 40, height: 28)
         }
+
+        return CGSize(width: 48, height: 34)
     }
 }
 

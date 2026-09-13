@@ -36,7 +36,7 @@ public struct LiteSwitch: View {
                     .compositingGroup()
                     .shadow(
                         color: Color.black.opacity(isOn ? 0.12 : 0.14),
-                        radius: isOn ? 1.5 : 1.5,
+                        radius: 1.5,
                         x: 0,
                         y: 1
                     )

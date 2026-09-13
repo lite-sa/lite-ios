@@ -4,9 +4,9 @@ import XCTest
 final class JWTDecoderTests: XCTestCase {
 
     /// Build an unsigned JWT-shaped token (`header.payload.sig`) with a base64url payload.
-    private func makeToken(payload: [String: Any], signature: String = "sig") -> String {
-        let header = base64url(try! JSONSerialization.data(withJSONObject: ["alg": "HS256", "typ": "JWT"]))
-        let body = base64url(try! JSONSerialization.data(withJSONObject: payload))
+    private func makeToken(payload: [String: Any], signature: String = "sig") throws -> String {
+        let header = base64url(try JSONSerialization.data(withJSONObject: ["alg": "HS256", "typ": "JWT"]))
+        let body = base64url(try JSONSerialization.data(withJSONObject: payload))
         return "\(header).\(body).\(signature)"
     }
 
@@ -18,7 +18,7 @@ final class JWTDecoderTests: XCTestCase {
     }
 
     func testDecodesRequiredAndOptionalClaims() throws {
-        let token = makeToken(payload: [
+        let token = try makeToken(payload: [
             "sessionId": "sess_123",
             "merchantId": "merch_456",
             "iss": "https://dev.lite.sa",
@@ -35,7 +35,7 @@ final class JWTDecoderTests: XCTestCase {
     }
 
     func testDecodesWithoutOptionalClaims() throws {
-        let token = makeToken(payload: [
+        let token = try makeToken(payload: [
             "sessionId": "s",
             "merchantId": "m",
             "iss": "https://lite.sa",
@@ -45,8 +45,8 @@ final class JWTDecoderTests: XCTestCase {
         XCTAssertNil(claims.amount)
     }
 
-    func testMissingRequiredClaimThrows() {
-        let token = makeToken(payload: ["merchantId": "m", "iss": "https://lite.sa"]) // no sessionId
+    func testMissingRequiredClaimThrows() throws {
+        let token = try makeToken(payload: ["merchantId": "m", "iss": "https://lite.sa"]) // no sessionId
         XCTAssertThrowsError(try JWTDecoder.decodeClaims(token)) { error in
             XCTAssertEqual(error as? JWTError, .missingRequiredClaims)
         }
@@ -60,15 +60,15 @@ final class JWTDecoderTests: XCTestCase {
 
     func testDoesNotVerifySignature() throws {
         // A garbage signature must still decode — decode is unverified (matches web).
-        let token = makeToken(
+        let token = try makeToken(
             payload: ["sessionId": "s", "merchantId": "m", "iss": "https://lite.sa"],
             signature: "totally-invalid-signature"
         )
         XCTAssertNoThrow(try JWTDecoder.decodeClaims(token))
     }
 
-    func testRejectsNonLiteIssuer() {
-        let token = makeToken(payload: [
+    func testRejectsNonLiteIssuer() throws {
+        let token = try makeToken(payload: [
             "sessionId": "s",
             "merchantId": "m",
             "iss": "https://lite.sa.evil.com",
@@ -78,8 +78,8 @@ final class JWTDecoderTests: XCTestCase {
         }
     }
 
-    func testRejectsNonHTTPSIssuer() {
-        let token = makeToken(payload: [
+    func testRejectsNonHTTPSIssuer() throws {
+        let token = try makeToken(payload: [
             "sessionId": "s",
             "merchantId": "m",
             "iss": "http://dev.lite.sa",

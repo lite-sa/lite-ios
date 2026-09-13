@@ -9,6 +9,7 @@ public struct LitePaymentForm: View {
     private let cardLayout: LiteCardLayout
     private let clientSecret: String?
     private let applePayEnabled: Bool
+    private let showResultInline: Bool
     private let privacyPolicyUrl: String?
     private let onPrivacyClick: (() -> Void)?
     private let onPayResult: ((Lite.PayResult) -> Void)?
@@ -18,6 +19,7 @@ public struct LitePaymentForm: View {
         cardLayout: LiteCardLayout = .compact,
         clientSecret: String? = nil,
         applePayEnabled: Bool = true,
+        showResultInline: Bool = false,
         privacyPolicyUrl: String? = nil,
         onPrivacyClick: (() -> Void)? = nil,
         onPayResult: ((Lite.PayResult) -> Void)? = nil
@@ -26,6 +28,7 @@ public struct LitePaymentForm: View {
         self.cardLayout = cardLayout
         self.clientSecret = clientSecret
         self.applePayEnabled = applePayEnabled
+        self.showResultInline = showResultInline
         self.privacyPolicyUrl = privacyPolicyUrl
         self.onPrivacyClick = onPrivacyClick
         self.onPayResult = onPayResult
@@ -39,6 +42,7 @@ public struct LitePaymentForm: View {
             cardLayout: cardLayout,
             showHeader: false,
             applePayEnabled: applePayEnabled,
+            showResultInline: showResultInline,
             onPayResult: onPayResult,
             privacyPolicyUrl: privacyPolicyUrl,
             onPrivacyClick: onPrivacyClick

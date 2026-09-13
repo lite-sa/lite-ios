@@ -8,7 +8,7 @@ enum LiteResourceBundle {
         return .module
         #else
         let candidates = [
-            Bundle(for: BundleToken.self),
+            Bundle(for: Lite.self),
             Bundle.main,
         ]
         for candidate in candidates {
@@ -21,10 +21,8 @@ enum LiteResourceBundle {
                 return bundle
             }
         }
-        return Bundle(for: BundleToken.self)
+        return Bundle(for: Lite.self)
         #endif
     }()
 }
-
-private final class BundleToken {}
 #endif

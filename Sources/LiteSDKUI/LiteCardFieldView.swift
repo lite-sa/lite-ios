@@ -161,7 +161,7 @@ private struct LiteFieldRepresentable: UIViewRepresentable {
         return field
     }
 
-    func updateUIView(_ uiView: LiteCardField, context: Context) {
+    func updateUIView(_ uiView: LiteCardField, context _: Context) {
         if uiView.chrome != chrome { uiView.chrome = chrome }
         if uiView.showsBrandAccessory != showsBrandAccessory { uiView.showsBrandAccessory = showsBrandAccessory }
         uiView.onChange = { state in

@@ -11,8 +11,8 @@ public enum PublicIPService {
     public static let placeholderIP = "196.136.41.119"
 
     public static func fetchPublicIP(
-        urlSession: URLSession = .shared,
-        logHandler: LiteRequestLogHandler? = nil
+        urlSession _: URLSession = .shared,
+        logHandler _: LiteRequestLogHandler? = nil
     ) async -> String {
         placeholderIP
     }

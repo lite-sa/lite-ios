@@ -7,7 +7,7 @@ import LiteSDKCore
 ///
 /// The web renders `next_action.redirect.url` in a sandboxed iframe and closes the modal when the
 /// challenge page posts `lite.redirect.authentication.complete` (or calls `window.close()`). We mirror
-/// that with an in-app `WKWebView` sheet (ACS completion needs a JS bridge — `ASWebAuthenticationSession`
+/// that with an in-app `WKWebView` (ACS completion needs a JS bridge — `ASWebAuthenticationSession`
 /// cannot receive that postMessage). Hardened to match Android `ThreeDSWebViewEngine` + web origin checks.
 protocol ThreeDSecurePresenting {
     /// Presents the challenge. Throws if the URL is not https (fail closed with a merchant-visible error).
@@ -42,6 +42,7 @@ enum ThreeDSURLValidator {
 
 enum ThreeDSPresentationError: Error, LocalizedError {
     case noPresenter
+    case challengeDismissed
 
     var errorDescription: String? {
         "We could not verify this payment. Please try again."
@@ -53,52 +54,84 @@ enum ThreeDSPresentationError: Error, LocalizedError {
 @MainActor
 final class WKWebViewThreeDS: NSObject, ThreeDSecurePresenting {
 
-    private var activePresenter: ThreeDSModalPresenter?
+    private var activePresenter: ThreeDSContainerViewController?
 
     func present(redirectURL: URL) async throws {
         try ThreeDSURLValidator.requireSecureChallengeURL(redirectURL)
 
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                var resumed = false
-                let resumeOnce: (Result<Void, Error>) -> Void = { result in
-                    guard !resumed else { return }
-                    resumed = true
-                    continuation.resume(with: result)
-                }
-
-                let presenter = ThreeDSModalPresenter(redirectURL: redirectURL) { [weak self] outcome in
-                    self?.activePresenter = nil
-                    switch outcome {
-                    case .completed:
-                        resumeOnce(.success(()))
-                    case .cancelled:
-                        resumeOnce(.failure(CancellationError()))
-                    }
-                }
-                self.activePresenter = presenter
-                let presented = presenter.present()
-                if !presented {
-                    self.activePresenter = nil
-                    resumeOnce(.failure(ThreeDSPresentationError.noPresenter))
-                }
-            }
+            try await awaitChallenge(redirectURL: redirectURL)
         } onCancel: {
-            Task { @MainActor [weak self] in
-                self?.activePresenter?.cancelFromTask()
+            scheduleCancellation()
+        }
+    }
+
+    private func awaitChallenge(redirectURL: URL) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            startChallenge(redirectURL: redirectURL, continuation: continuation)
+        }
+    }
+
+    private func startChallenge(
+        redirectURL: URL,
+        continuation: CheckedContinuation<Void, Error>
+    ) {
+        var resumed = false
+        let resumeOnce: (Result<Void, Error>) -> Void = { result in
+            guard !resumed else { return }
+            resumed = true
+            continuation.resume(with: result)
+        }
+
+        guard let host = Self.topViewController() else {
+            resumeOnce(.failure(ThreeDSPresentationError.noPresenter))
+            return
+        }
+
+        let presenter = ThreeDSContainerViewController(redirectURL: redirectURL) { [weak self] outcome in
+            self?.activePresenter = nil
+            switch outcome {
+            case .completed:
+                resumeOnce(.success(()))
+            case .dismissed:
+                resumeOnce(.failure(ThreeDSPresentationError.challengeDismissed))
+            case .cancelled:
+                resumeOnce(.failure(CancellationError()))
             }
         }
+        activePresenter = presenter
+        if !presenter.present(from: host) {
+            activePresenter = nil
+            resumeOnce(.failure(ThreeDSPresentationError.noPresenter))
+        }
+    }
+
+    nonisolated private func scheduleCancellation() {
+        Task { @MainActor [weak self] in
+            self?.activePresenter?.cancelFromTask()
+        }
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow }
+        guard var top = window?.rootViewController else { return nil }
+        while let presented = top.presentedViewController { top = presented }
+        return top
     }
 }
 
 @MainActor
-private final class ThreeDSModalPresenter: NSObject, WKNavigationDelegate, WKScriptMessageHandler, UIAdaptivePresentationControllerDelegate {
+private final class ThreeDSContainerViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler, UIAdaptivePresentationControllerDelegate {
 
     private static let completionMessageType = "lite.redirect.authentication.complete"
     private static let handlerName = "liteAuthComplete"
 
     enum Outcome {
         case completed
+        case dismissed
         case cancelled
     }
 
@@ -109,7 +142,6 @@ private final class ThreeDSModalPresenter: NSObject, WKNavigationDelegate, WKScr
     private var finished = false
 
     private var webView: WKWebView!
-    private weak var presentedController: UIViewController?
     private var dataStore: WKWebsiteDataStore!
 
     init(redirectURL: URL, onFinish: @escaping (Outcome) -> Void) {
@@ -117,18 +149,34 @@ private final class ThreeDSModalPresenter: NSObject, WKNavigationDelegate, WKScr
         self.expectedOrigin = ThreeDSURLValidator.expectedOrigin(for: redirectURL)
         self.challengeNonce = UUID().uuidString
         self.onFinish = onFinish
-        super.init()
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .fullScreen
+        overrideUserInterfaceStyle = .light
     }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) { fatalError("init(coder:) is not supported") }
 
     /// Returns `false` when there is no key window / presenter — caller must resume continuation.
     @discardableResult
-    func present() -> Bool {
-        guard let host = topViewController() else { return false }
+    func present(from host: UIViewController) -> Bool {
+        presentationController?.delegate = self
+        let url = redirectURL
+        host.present(self, animated: true) { [weak self] in
+            self?.webView.load(URLRequest(url: url))
+        }
+        return true
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = LiteTheme.Colors.backgroundUIColor
 
         dataStore = WKWebsiteDataStore.nonPersistent()
         let config = WKWebViewConfiguration()
         let controller = WKUserContentController()
         controller.addUserScript(makeBridgeScript())
+        controller.addUserScript(makeFillViewportScript())
         controller.add(self, name: Self.handlerName)
         config.userContentController = controller
         config.websiteDataStore = dataStore
@@ -138,59 +186,46 @@ private final class ThreeDSModalPresenter: NSObject, WKNavigationDelegate, WKScr
         webView.navigationDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.overrideUserInterfaceStyle = .light
-
-        let container = UIViewController()
-        container.overrideUserInterfaceStyle = .light
-        container.view.backgroundColor = LiteTheme.Colors.backgroundUIColor
+        webView.isOpaque = true
+        webView.backgroundColor = LiteTheme.Colors.backgroundUIColor
+        webView.scrollView.backgroundColor = LiteTheme.Colors.backgroundUIColor
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = false
 
         let closeButton = UIButton(type: .system)
         closeButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
         closeButton.tintColor = LiteTheme.Colors.textSecondaryUIColor
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.accessibilityLabel = "Close"
-        closeButton.addAction(UIAction { [weak self] _ in self?.finish(.completed) }, for: .touchUpInside)
+        closeButton.addAction(UIAction { [weak self] _ in self?.finish(.dismissed) }, for: .touchUpInside)
 
-        container.view.addSubview(closeButton)
-        container.view.addSubview(webView)
+        view.addSubview(webView)
+        view.addSubview(closeButton)
+
         NSLayoutConstraint.activate([
-            closeButton.topAnchor.constraint(equalTo: container.view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            closeButton.trailingAnchor.constraint(equalTo: container.view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            closeButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             closeButton.widthAnchor.constraint(equalToConstant: 44),
             closeButton.heightAnchor.constraint(equalToConstant: 44),
-            webView.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 8),
-            webView.leadingAnchor.constraint(equalTo: container.view.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: container.view.trailingAnchor),
-            webView.bottomAnchor.constraint(equalTo: container.view.bottomAnchor),
         ])
-
-        let nav = UINavigationController(rootViewController: container)
-        nav.overrideUserInterfaceStyle = .light
-        nav.modalPresentationStyle = .pageSheet
-        nav.presentationController?.delegate = self
-        if let sheet = nav.sheetPresentationController {
-            sheet.detents = [.large()]
-            sheet.prefersGrabberVisible = true
-        }
-
-        presentedController = nav
-        let url = redirectURL
-        host.present(nav, animated: true) { [weak self] in
-            self?.webView.load(URLRequest(url: url))
-        }
-        return true
     }
 
     func cancelFromTask() {
         finish(.cancelled)
     }
 
-    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-        finish(.completed)
+    func presentationControllerDidDismiss(_: UIPresentationController) {
+        finish(.dismissed)
     }
 
     // MARK: - WKScriptMessageHandler
 
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+    func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == Self.handlerName else { return }
         guard isTrustedFrame(message.frameInfo) else { return }
         guard isTrustedCompletionPayload(message.body) else { return }
@@ -225,7 +260,7 @@ private final class ThreeDSModalPresenter: NSObject, WKNavigationDelegate, WKScr
     // MARK: - WKNavigationDelegate
 
     func webView(
-        _ webView: WKWebView,
+        _: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
@@ -242,7 +277,71 @@ private final class ThreeDSModalPresenter: NSObject, WKNavigationDelegate, WKScr
         decisionHandler(.cancel)
     }
 
+    func webView(_ webView: WKWebView, didFinish _: WKNavigation!) {
+        guard webView.url?.scheme != "about" else { return }
+        webView.evaluateJavaScript(Self.fillViewportJavaScript, completionHandler: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, !self.finished else { return }
+            self.webView?.evaluateJavaScript(Self.fillViewportJavaScript, completionHandler: nil)
+        }
+    }
+
     // MARK: - Bridge
+
+    /// Stretch ACS html/body/iframe (and a single root card) to the WebView bounds.
+    private static let fillViewportJavaScript = """
+    (function() {
+      var html = document.documentElement;
+      var body = document.body;
+      if (!html || !body) return;
+      html.style.setProperty('height', '100%', 'important');
+      html.style.setProperty('min-height', '100%', 'important');
+      html.style.setProperty('width', '100%', 'important');
+      body.style.setProperty('height', '100%', 'important');
+      body.style.setProperty('min-height', '100%', 'important');
+      body.style.setProperty('width', '100%', 'important');
+      body.style.setProperty('margin', '0', 'important');
+      body.style.setProperty('display', 'flex', 'important');
+      body.style.setProperty('flex-direction', 'column', 'important');
+      function stretch(el) {
+        if (!el || !el.style) return;
+        el.style.setProperty('width', '100%', 'important');
+        el.style.setProperty('max-width', 'none', 'important');
+        el.style.setProperty('height', '100%', 'important');
+        el.style.setProperty('min-height', '0', 'important');
+        el.style.setProperty('flex', '1 1 auto', 'important');
+        el.style.setProperty('margin-left', '0', 'important');
+        el.style.setProperty('margin-right', '0', 'important');
+        el.style.setProperty('box-sizing', 'border-box', 'important');
+      }
+      var frames = body.querySelectorAll('iframe');
+      var i;
+      if (frames.length) {
+        for (i = 0; i < frames.length; i++) {
+          stretch(frames[i]);
+          var p = frames[i].parentElement;
+          while (p && p !== body) {
+            stretch(p);
+            p = p.parentElement;
+          }
+        }
+        return;
+      }
+      var root = body.children.length === 1 ? body.children[0] : null;
+      while (root) {
+        stretch(root);
+        root = root.children.length === 1 ? root.children[0] : null;
+      }
+    })();
+    """
+
+    private func makeFillViewportScript() -> WKUserScript {
+        WKUserScript(
+            source: Self.fillViewportJavaScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+    }
 
     private func makeBridgeScript() -> WKUserScript {
         let originLiteral: String
@@ -306,8 +405,8 @@ private final class ThreeDSModalPresenter: NSObject, WKNavigationDelegate, WKScr
         guard !finished else { return }
         finished = true
         wipeWebView()
-        if let presented = presentedController {
-            presented.dismiss(animated: true) { [onFinish] in onFinish(outcome) }
+        if presentingViewController != nil {
+            dismiss(animated: true) { [onFinish] in onFinish(outcome) }
         } else {
             onFinish(outcome)
         }
@@ -324,16 +423,6 @@ private final class ThreeDSModalPresenter: NSObject, WKNavigationDelegate, WKScr
             store?.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: records) {}
         }
         webView = nil
-    }
-
-    private func topViewController() -> UIViewController? {
-        let window = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap { $0.windows }
-            .first { $0.isKeyWindow }
-        guard var top = window?.rootViewController else { return nil }
-        while let presented = top.presentedViewController { top = presented }
-        return top
     }
 }
 #endif

@@ -12,6 +12,7 @@ import LiteSDKCore
 /// ```
 @MainActor
 public enum LitePaymentSheet {
+    private static weak var activeHost: LitePaymentSheetHostController?
 
     public struct Configuration: Sendable {
         public var cardLayout: LiteCardLayout = .compact
@@ -44,16 +45,26 @@ public enum LitePaymentSheet {
         configuration: Configuration = .init(),
         completion: @escaping (Lite.PayResult) -> Void
     ) {
+        guard activeHost == nil else {
+            completion(alreadyPresentingResult())
+            return
+        }
+
         let lite = Lite()
 
         let host = LitePaymentSheetHostController(
             lite: lite,
             clientSecret: clientSecret.trimmingCharacters(in: .whitespacesAndNewlines),
             configuration: configuration,
-            completion: completion
+            completion: { result in
+                activeHost = nil
+                completion(result)
+            }
         )
+        activeHost = host
         host.modalPresentationStyle = .pageSheet
         if let sheet = host.sheetPresentationController {
+            sheet.delegate = host
             // Keep full-width at every detent height. Without this, shorter content detents
             // inset from the screen edges and taller ones go edge-to-edge — the side-gap stutter.
             sheet.prefersEdgeAttachedInCompactHeight = true
@@ -66,12 +77,21 @@ public enum LitePaymentSheet {
         }
         presenter.present(host, animated: true)
     }
+
+    private static func alreadyPresentingResult() -> Lite.PayResult {
+        Lite.PayResult(
+            status: .failure,
+            paymentId: nil,
+            error: "A payment sheet is already presenting",
+            errorCode: "already_presenting"
+        )
+    }
 }
 
 // MARK: - Host
 
 @MainActor
-private final class LitePaymentSheetHostController: UIViewController {
+private final class LitePaymentSheetHostController: UIViewController, UISheetPresentationControllerDelegate {
     private let lite: Lite
     private let clientSecret: String
     private let configuration: LitePaymentSheet.Configuration
@@ -102,7 +122,7 @@ private final class LitePaymentSheetHostController: UIViewController {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    required init?(coder _: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -159,6 +179,22 @@ private final class LitePaymentSheetHostController: UIViewController {
         ])
         host.didMove(toParent: self)
         LiteKeyboardDismissTap.install(on: view)
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard !didFinish else { return }
+
+        // Full-screen 3DS covers this controller without dismissing the payment sheet.
+        // An actual sheet dismissal has no presented child, or marks this controller
+        // as being dismissed.
+        if !isBeingDismissed,
+           presentingViewController != nil,
+           presentedViewController?.modalPresentationStyle == .fullScreen {
+            return
+        }
+
+        handleExternalDismissal()
     }
 
     /// Content-sized detent for both form and result (iOS 16+). iOS 15 falls back to medium/large.
@@ -232,9 +268,16 @@ private final class LitePaymentSheetHostController: UIViewController {
         return min(max(height, 240), maximum)
     }
 
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        guard isBeingDismissed || presentingViewController == nil else { return }
+    func presentationControllerShouldDismiss(_: UIPresentationController) -> Bool {
+        lite.phase != .paying
+    }
+
+    func presentationControllerDidDismiss(_: UIPresentationController) {
+        handleExternalDismissal()
+    }
+
+    /// Completes presentation after the payment sheet itself is dismissed.
+    private func handleExternalDismissal() {
         guard !didFinish else { return }
 
         // Prefer a completed non-cancel outcome if pay already finished.
@@ -291,6 +334,8 @@ private struct LitePaymentSheetRoot: View {
 
     @State private var result: Lite.PayResult?
     @State private var showResult = false
+    @State private var startedFor: String?
+    @State private var awaitingCoveredPaymentResult = false
 
     var body: some View {
         Group {
@@ -305,6 +350,16 @@ private struct LitePaymentSheetRoot: View {
                     )
                 )
                 .padding(.bottom, LiteTheme.Spacing.xs)
+            } else if awaitingCoveredPaymentResult {
+                VStack(spacing: LiteTheme.Spacing.m) {
+                    ProgressView()
+                        .tint(LiteTheme.Colors.primary)
+                    Text("Processing payment")
+                        .font(LiteTheme.Typography.body())
+                        .foregroundColor(LiteTheme.Colors.textSecondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, LiteTheme.Spacing.xl)
             } else {
                 LitePaymentFormContent(
                     lite: lite,
@@ -317,6 +372,7 @@ private struct LitePaymentSheetRoot: View {
                         onFinished(Lite.PayResult(status: .cancelled, paymentId: nil, error: "cancelled"))
                     },
                     onPayResult: { payResult in
+                        awaitingCoveredPaymentResult = false
                         // Skip result chrome for user cancel — complete immediately.
                         if payResult.status == .cancelled {
                             onFinished(payResult)
@@ -347,10 +403,38 @@ private struct LitePaymentSheetRoot: View {
             guard height > 0 else { return }
             onContentHeightChange(height)
         }
+        .onDisappear {
+            if lite.phase == .paying {
+                awaitingCoveredPaymentResult = true
+            }
+        }
+        .onAppear {
+            restoreFormAfterDismissedChallengeIfReady()
+        }
+        .onChange(of: lite.isThreeDSActive) { isActive in
+            if isActive {
+                awaitingCoveredPaymentResult = true
+                return
+            }
+            restoreFormAfterDismissedChallengeIfReady()
+        }
+        .onChange(of: lite.phase) { _ in
+            restoreFormAfterDismissedChallengeIfReady()
+        }
         .liteFixedColorScheme()
-        .task {
-            guard !clientSecret.isEmpty else { return }
-            await lite.start(clientSecret: clientSecret)
+        .task(id: clientSecret) {
+            let secret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !secret.isEmpty else { return }
+            // Returning from full-screen 3DS makes this task reappear. Do not restart
+            // the session or cancel the in-flight payment that owns the result.
+            if startedFor == secret {
+                switch lite.phase {
+                case .ready, .paying, .loadingSession: return
+                case .idle, .failed: break
+                }
+            }
+            await lite.start(clientSecret: secret)
+            startedFor = secret
             // `start()` resets `storeForFuture`; re-apply the sheet configuration default.
             if configuration.defaultStoreForFuture {
                 lite.storeForFuture = true
@@ -363,6 +447,15 @@ private struct LitePaymentSheetRoot: View {
                 onFinished(preloaded)
             }
         }
+    }
+
+    private func restoreFormAfterDismissedChallengeIfReady() {
+        guard awaitingCoveredPaymentResult,
+              !lite.isThreeDSActive,
+              lite.phase != .paying,
+              lite.lastPayResult == nil
+        else { return }
+        awaitingCoveredPaymentResult = false
     }
 }
 #endif
