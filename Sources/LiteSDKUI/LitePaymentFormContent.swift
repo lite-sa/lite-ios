@@ -27,6 +27,7 @@ public struct LitePaymentFormContent: View {
 
     @State private var paying = false
     @State private var didNotifyTerminalResult = false
+    @State private var keyboardOverlap: CGFloat = 0
 
     public init(
         lite: Lite,
@@ -55,7 +56,7 @@ public struct LitePaymentFormContent: View {
     }
 
     /// Window height when available (Split View / Stage Manager); `UIScreen.main` is last resort.
-    private static var fittingScrollMaxHeight: CGFloat {
+    private static var baseFittingScrollMaxHeight: CGFloat {
         let scene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
@@ -64,6 +65,20 @@ public struct LitePaymentFormContent: View {
             ?? scene?.screen.bounds.height
             ?? UIScreen.main.bounds.height
         return height * 0.92 - 160
+    }
+
+    private var fittingScrollMaxHeight: CGFloat {
+        if preferContentHeight {
+            return max(Self.baseFittingScrollMaxHeight - keyboardOverlap, 0)
+        }
+        return Self.baseFittingScrollMaxHeight
+    }
+
+    private var keyboardAvoidanceInset: CGFloat {
+        if preferContentHeight {
+            return 0
+        }
+        return keyboardOverlap
     }
 
     public var body: some View {
@@ -138,7 +153,7 @@ public struct LitePaymentFormContent: View {
                 if preferContentHeight {
                     // Sheet: methods scroll when tall; pay footer stays pinned below.
                     // Reserve ~160pt for header + pay chrome so the sheet can still grow to ~full screen.
-                    LiteFittingScroll(maxHeight: Self.fittingScrollMaxHeight) {
+                    LiteFittingScroll(maxHeight: fittingScrollMaxHeight) {
                         methods
                     }
                 } else {
@@ -175,8 +190,13 @@ public struct LitePaymentFormContent: View {
             }
         }
         .background(LiteTheme.Colors.background)
+        .padding(.bottom, keyboardAvoidanceInset)
+        .animation(.easeOut(duration: 0.25), value: keyboardAvoidanceInset)
+        .background(
+            LiteKeyboardOverlapProbe(inset: $keyboardOverlap)
+                .accessibilityHidden(true)
+        )
         .background(LiteKeyboardDismissInstaller())
-        .liteKeyboardAvoidance()
     }
 
     @ViewBuilder
@@ -643,26 +663,8 @@ enum LiteKeyboard {
 }
 
 extension View {
-    func liteKeyboardAvoidance() -> some View {
-        modifier(LiteKeyboardAvoidance())
-    }
-
     func liteScrollDismissesKeyboard() -> some View {
         modifier(LiteScrollDismissesKeyboard())
-    }
-}
-
-private struct LiteKeyboardAvoidance: ViewModifier {
-    @State private var inset: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content
-            .padding(.bottom, inset)
-            .animation(.easeOut(duration: 0.25), value: inset)
-            .background(
-                LiteKeyboardOverlapProbe(inset: $inset)
-                    .accessibilityHidden(true)
-            )
     }
 }
 

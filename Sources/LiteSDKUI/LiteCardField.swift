@@ -93,7 +93,6 @@ final class LiteCardField: UIView, UITextFieldDelegate {
         textField.translatesAutoresizingMaskIntoConstraints = false
         textField.delegate = self
         textField.addTarget(self, action: #selector(editingChanged), for: .editingChanged)
-        attachDismissAccessory()
         addSubview(textField)
         NSLayoutConstraint.activate([
             textField.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -160,29 +159,6 @@ final class LiteCardField: UIView, UITextFieldDelegate {
     }
 
     // MARK: Keyboard
-
-    /// Number pads have no Return key; without this, the keyboard covers Pay and cannot be dismissed.
-    private func attachDismissAccessory() {
-        let toolbar = UIToolbar()
-        toolbar.overrideUserInterfaceStyle = .light
-        toolbar.barTintColor = LiteTheme.Colors.backgroundUIColor
-        toolbar.tintColor = LiteTheme.Colors.primaryUIColor
-        toolbar.isTranslucent = false
-        let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-        let done = UIBarButtonItem(
-            barButtonSystemItem: .done,
-            target: self,
-            action: #selector(dismissKeyboard)
-        )
-        done.accessibilityLabel = "Done"
-        toolbar.items = [flex, done]
-        toolbar.sizeToFit()
-        textField.inputAccessoryView = toolbar
-    }
-
-    @objc private func dismissKeyboard() {
-        textField.resignFirstResponder()
-    }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         textField.resignFirstResponder()
