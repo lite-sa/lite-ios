@@ -1,19 +1,15 @@
 # LiteSDK for iOS
 
-The Lite Checkout native iOS SDK, version **0.0.4**.
+The Lite Checkout native iOS SDK, version **0.0.5**.
 
 Proprietary and confidential — see [LICENSE](./LICENSE). Access to this
 repository does not grant permission to redistribute or disclose its contents.
-
-This repository is generated. Source lives in `lite-sa/checkout` under
-`native/LiteSDK`, and every commit here is produced by the *Release iOS SDK*
-workflow. Open issues and pull requests against the monorepo.
 
 ## Swift Package Manager
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/lite-sa/lite-ios.git", from: "0.0.4"),
+    .package(url: "https://github.com/lite-sa/lite-ios.git", from: "0.0.5"),
 ]
 ```
 
