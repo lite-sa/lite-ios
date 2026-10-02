@@ -131,6 +131,11 @@ public final class Lite: ObservableObject {
         enabledOnly: Bool = false
     ) -> [StoredInstrument] {
         guard paymentMethod == "card" else { return [] }
+        // A stored instrument carries a future-usage agreement. The payment API rejects that
+        // combined with MOTO, so the web SDK returns nothing here.
+        if session?.processingType == "MOTO" {
+            return []
+        }
         let networks = session?.paymentMethods.card?.networks
         let instruments = (session?.paymentMethods.card?.storedInstruments ?? []).map { instrument in
             var copy = instrument
@@ -205,14 +210,38 @@ public final class Lite: ObservableObject {
         }
     }
 
-    /// Register a UIKit `LiteCardField`. SwiftUI field views do this automatically.
-    func register(_ field: LiteCardField) {
+    /// Register a UIKit `LiteCardField`. Returns false when another field of this type is already live.
+    @discardableResult
+    func register(_ field: LiteCardField) -> Bool {
         aggregator.register(field)
     }
 
-    /// Unregister a field when its view is removed from the hierarchy.
+    /// Remember [field]'s text before a window detach wipes the display.
+    func retainField(_ field: LiteCardField) {
+        aggregator.retain(field)
+    }
+
+    func dropRetainedField(_ type: CardElementType) {
+        aggregator.dropRetained(type)
+    }
+
+    func retainedFieldValue(_ type: CardElementType) -> String {
+        aggregator.retainedValue(for: type)
+    }
+
+    /// Unregister a field and drop its stored text. Permanent disposal.
     func unregister(_ field: LiteCardField) {
-        aggregator.unregister(field)
+        aggregator.unregister(field, keepingValue: false)
+    }
+
+    /// Unregister a field but keep its stored text for the next attach.
+    func unregisterKeepingValue(_ field: LiteCardField) {
+        aggregator.unregister(field, keepingValue: true)
+    }
+
+    /// Focus the field that follows [type], when that field is registered.
+    func focusField(after type: CardElementType) {
+        aggregator.focusField(after: type)
     }
 
     /// Reset the SDK to its initial state: drops the session, request log, and any collected card
@@ -354,8 +383,10 @@ public final class Lite: ObservableObject {
         guard !instrumentId.isEmpty else {
             return failure(LiteError.decoding("instrument_id is required"))
         }
-        if let instrument = getStoredInstruments().first(where: { $0.id == instrumentId }),
-           !instrument.enabled {
+        guard let instrument = getStoredInstruments().first(where: { $0.id == instrumentId }) else {
+            return failure(LiteError.decoding("Stored instrument not found"))
+        }
+        if !instrument.enabled {
             return failure(LiteError.decoding("Card scheme is not enabled for this session"))
         }
 
@@ -480,6 +511,9 @@ public final class Lite: ObservableObject {
             error: result.error
         )
         lastPayResult = payResult
+        if payResult.isSuccess {
+            aggregator.reset()
+        }
         await refreshSession()
         return payResult
     }

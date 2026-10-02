@@ -29,7 +29,9 @@ public enum CardBrandIcons {
             width: iconWidth,
             height: iconHeight
         )
+        imageView.isAccessibilityElement = false
         imageView.accessibilityLabel = accessibilityLabel
+        container.isAccessibilityElement = false
         container.addSubview(imageView)
         return container
     }

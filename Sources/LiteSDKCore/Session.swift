@@ -16,6 +16,8 @@ public struct LiteCheckoutSession: Decodable, Sendable {
     public let expiresOn: String?
     public let channelId: String?
     public let orderId: String?
+    /// Absent on older sessions. `"MOTO"` suppresses stored instruments, matching the web SDK.
+    public let processingType: String?
     public let customer: Customer?
     public let order: Order?
     public let product: Product?
@@ -28,6 +30,7 @@ public struct LiteCheckoutSession: Decodable, Sendable {
         case expiresOn = "expires_on"
         case channelId = "channel_id"
         case orderId = "order_id"
+        case processingType = "processing_type"
         case checkoutConfig = "checkout_config"
     }
 

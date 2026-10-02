@@ -28,8 +28,18 @@ final class LiteCardField: UIView, UITextFieldDelegate {
     var onShowsInvalidChange: ((Bool) -> Void)?
 
     /// Internal hook used by `LiteCardAggregator` to observe validity without clobbering the
-    /// public `onChange` a merchant may have set.
+    /// merchant `onDetailedChange`.
     var onStateChange: ((FieldState) -> Void)?
+
+    /// Merchant-facing change. The payload never includes the typed text.
+    var onDetailedChange: ((LiteCardFieldChange) -> Void)?
+
+    /// Called when the user advances from the keyboard, and when expiry becomes valid.
+    var onAdvance: (() -> Void)?
+
+    var editingEnabled: Bool = true {
+        didSet { textField.isEnabled = editingEnabled }
+    }
 
     /// Current validity. Empty is invalid for required fields; cardholder name is optional
     /// (empty is valid). `showsInvalid` gates chrome so an untouched field never looks like an
@@ -54,7 +64,8 @@ final class LiteCardField: UIView, UITextFieldDelegate {
         }
     }
 
-    private let textField = UITextField()
+    private let textField = SecureCardTextField()
+    private var hasFocus = false
 
     /// Unformatted value collected at pay time. `internal` on purpose (PCI encapsulation).
     var rawValue: String {
@@ -91,7 +102,19 @@ final class LiteCardField: UIView, UITextFieldDelegate {
         textField.tintColor = LiteTheme.Colors.primaryUIColor
         textField.keyboardAppearance = .light
         textField.translatesAutoresizingMaskIntoConstraints = false
+        textField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textField.delegate = self
+        textField.restorationIdentifier = nil
+        textField.adjustsFontForContentSizeCategory = true
+        textField.allowsCopyOrCut = { [weak self] in
+            guard let self else { return false }
+            return LiteFieldClipboard.allowsCopyOrCut(self.type)
+        }
+        textField.announcedValue = { [weak self] in
+            guard let self else { return "" }
+            return LiteFieldCopy.accessibilityValue(brand: self.cardBrand, error: self.currentError)
+        }
         textField.addTarget(self, action: #selector(editingChanged), for: .editingChanged)
         addSubview(textField)
         NSLayoutConstraint.activate([
@@ -116,39 +139,65 @@ final class LiteCardField: UIView, UITextFieldDelegate {
         updateInvalidStyling(showsInvalid: showsInvalid)
     }
 
+    func focus() {
+        textField.becomeFirstResponder()
+    }
+
+    func applyContentStyle(textColor: UIColor, placeholderColor: UIColor, font: UIFont) {
+        textField.textColor = textColor
+        textField.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: font)
+        let placeholder = textField.attributedPlaceholder?.string ?? ""
+        textField.attributedPlaceholder = NSAttributedString(
+            string: placeholder,
+            attributes: [.foregroundColor: placeholderColor, .font: textField.font as Any]
+        )
+    }
+
+    func revalidate() {
+        emitState(notifySubmit: false)
+    }
+
+    private var currentError: LiteFieldError?
+
     private func configureForType() {
         textField.keyboardType = .numberPad
+        textField.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17))
+        let label = LiteFieldCopy.label(for: type)
+        textField.accessibilityLabel = label
+        textField.accessibilityHint = nil
         switch type {
         case .cardNumber:
-            applyPlaceholder("1234 1234 1234 1234")
+            applyPlaceholder(LiteFieldCopy.placeholder(for: .cardNumber))
             textField.textContentType = .creditCardNumber
-            textField.accessibilityLabel = "Card number"
+            textField.semanticContentAttribute = .forceLeftToRight
+            textField.textAlignment = .left
         case .expiry:
-            applyPlaceholder("MM/YY")
+            applyPlaceholder(LiteFieldCopy.placeholder(for: .expiry))
             if #available(iOS 17.0, *) { textField.textContentType = .creditCardExpiration }
-            textField.accessibilityLabel = "Expiration"
+            textField.semanticContentAttribute = .forceLeftToRight
+            textField.textAlignment = .left
         case .cvv:
-            applyPlaceholder("CVV")
+            applyPlaceholder(LiteFieldCopy.placeholder(for: .cvv))
             textField.isSecureTextEntry = true
             if #available(iOS 17.0, *) { textField.textContentType = .creditCardSecurityCode }
-            textField.accessibilityLabel = "CVV security code"
+            textField.semanticContentAttribute = .forceLeftToRight
+            textField.textAlignment = .left
             if let image = UIImage(named: "ic-cvv", in: LiteResourceBundle.current, compatibleWith: nil) {
                 textField.rightView = CardBrandIcons.cardNumberRightView(
                     image: image.withRenderingMode(.alwaysTemplate),
-                    accessibilityLabel: "CVV"
+                    accessibilityLabel: label
                 )
                 textField.rightViewMode = .always
                 textField.rightView?.tintColor = LiteTheme.Colors.textSecondaryUIColor
             }
         case .cardholderName:
-            applyPlaceholder("Cardholder name (optional)")
+            applyPlaceholder(LiteFieldCopy.placeholder(for: .cardholderName))
             textField.keyboardType = .default
             textField.returnKeyType = .done
             textField.autocapitalizationType = .words
             textField.textContentType = .name
-            textField.accessibilityLabel = "Cardholder name"
         }
-        emitState()
+        emitState(notifySubmit: false)
     }
 
     private func applyPlaceholder(_ text: String) {
@@ -161,8 +210,21 @@ final class LiteCardField: UIView, UITextFieldDelegate {
     // MARK: Keyboard
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        if type == .cardNumber || type == .expiry || type == .cardholderName {
+            onAdvance?()
+        }
         textField.resignFirstResponder()
         return true
+    }
+
+    func textFieldDidBeginEditing(_: UITextField) {
+        hasFocus = true
+        emitState(notifySubmit: false)
+    }
+
+    func textFieldDidEndEditing(_: UITextField) {
+        hasFocus = false
+        emitState(notifySubmit: false)
     }
 
     // MARK: Editing
@@ -241,7 +303,7 @@ final class LiteCardField: UIView, UITextFieldDelegate {
         if type == .cardNumber {
             updateBrandIcon(for: CardValidation.detectCardType(formatted))
         }
-        emitState()
+        emitState(notifySubmit: true)
     }
 
     private func updateBrandIcon(for brand: CardType) {
@@ -261,20 +323,40 @@ final class LiteCardField: UIView, UITextFieldDelegate {
         textField.rightViewMode = .always
     }
 
-    private func emitState() {
+    private func emitState(notifySubmit: Bool) {
         let value = textField.text ?? ""
-        let valid: Bool
+        let formatValid: Bool
         switch type {
-        case .cardNumber:     valid = CardValidation.validateCardNumber(value)
-        case .expiry:         valid = CardValidation.validateExpiry(value)
-        case .cvv:            valid = CardValidation.validateCVV(value)
-        case .cardholderName: valid = true // optional — empty allowed
+        case .cardNumber:     formatValid = CardValidation.validateCardNumber(value)
+        case .expiry:         formatValid = CardValidation.validateExpiry(value)
+        case .cvv:            formatValid = CardValidation.validateCVV(value)
+        case .cardholderName: formatValid = true
         }
-        isValid = valid
-        updateInvalidStyling(showsInvalid: !valid && !value.isEmpty)
-        let state = FieldState(valid: valid)
+        let brand = type == .cardNumber ? CardValidation.detectCardType(value) : cardBrand
+        if type == .cardNumber { cardBrand = brand }
+        let change = LiteCardFieldState.resolve(
+            type: type,
+            isEmpty: value.isEmpty,
+            formatValid: formatValid,
+            brand: brand,
+            focused: hasFocus
+        )
+        let wasValid = isValid
+        isValid = change.valid
+        currentError = change.error
+        if let error = change.error {
+            textField.accessibilityHint = LiteFieldCopy.message(for: error)
+        } else {
+            textField.accessibilityHint = nil
+        }
+        updateInvalidStyling(showsInvalid: change.error != nil)
+        let state = FieldState(valid: change.valid)
         onChange?(state)
         onStateChange?(state)
+        onDetailedChange?(change)
+        if notifySubmit && !wasValid && change.valid && type == .expiry {
+            onAdvance?()
+        }
     }
 
     private func updateInvalidStyling(showsInvalid: Bool) {
@@ -294,11 +376,62 @@ final class LiteCardField: UIView, UITextFieldDelegate {
         textField.layer.cornerRadius = showsInvalid ? 5 : 0
     }
 
+    /// Clear the visible text without telling listeners. Used when the field leaves
+    /// the window; the aggregator still holds the value for restore.
+    func wipeDisplay() {
+        textField.text = ""
+        if type == .cardNumber {
+            updateBrandIcon(for: .unknown)
+        }
+    }
+
+    /// Put a retained value back into the field after it returns to a window.
+    func restore(_ raw: String) {
+        if raw.isEmpty {
+            return
+        }
+        let formatted: String
+        switch type {
+        case .cardNumber:
+            formatted = CardValidation.formatCardNumber(raw)
+        case .expiry:
+            formatted = CardValidation.formatExpiry(raw)
+        case .cvv:
+            formatted = CardValidation.sanitizeCVV(raw)
+        case .cardholderName:
+            formatted = raw
+        }
+        textField.text = formatted
+        if type == .cardNumber {
+            updateBrandIcon(for: CardValidation.detectCardType(formatted))
+        }
+        emitState(notifySubmit: false)
+    }
+
     /// Clear the field value and reset validity — used when the checkout flow restarts.
     func clear() {
         textField.text = ""
         if type == .cardNumber { updateBrandIcon(for: .unknown) }
-        emitState()
+        emitState(notifySubmit: false)
+    }
+}
+
+/// PAN and CVV cannot be copied. The accessibility value is the brand or the error, never the typed text.
+private final class SecureCardTextField: UITextField {
+    var allowsCopyOrCut: () -> Bool = { true }
+    var announcedValue: () -> String = { "" }
+
+    override var accessibilityValue: String? {
+        get { announcedValue() }
+        set { _ = newValue }
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        let isCopyOrCut = action == #selector(copy(_:)) || action == #selector(cut(_:))
+        if isCopyOrCut && !allowsCopyOrCut() {
+            return false
+        }
+        return super.canPerformAction(action, withSender: sender)
     }
 }
 #endif

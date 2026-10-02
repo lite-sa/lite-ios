@@ -53,7 +53,7 @@ struct LiteCardEntryView: View {
                 showsInvalid: numberInvalid,
                 error: numberInvalid ? "Incorrect card number" : nil
             ) {
-                LiteCardNumberField(lite, chrome: .plain, onShowsInvalid: { numberInvalid = $0 })
+                LiteCardNumberField(lite: lite, style: .plain, onChange: { numberInvalid = $0.error != nil })
             }
             HStack(alignment: .top, spacing: LiteTheme.Spacing.m) {
                 pillField(
@@ -61,18 +61,18 @@ struct LiteCardEntryView: View {
                     showsInvalid: expiryInvalid,
                     error: expiryInvalid ? "Incorrect expiry date" : nil
                 ) {
-                    LiteExpiryField(lite, chrome: .plain, onShowsInvalid: { expiryInvalid = $0 })
+                    LiteExpiryField(lite: lite, style: .plain, onChange: { expiryInvalid = $0.error != nil })
                 }
                 pillField(
                     label: "CVV",
                     showsInvalid: cvvInvalid,
                     error: cvvInvalid ? "Incorrect CVV" : nil
                 ) {
-                    LiteCVVField(lite, chrome: .plain, onShowsInvalid: { cvvInvalid = $0 })
+                    LiteCvvField(lite: lite, style: .plain, onChange: { cvvInvalid = $0.error != nil })
                 }
             }
             pillField(label: "Cardholder Name", labelSuffix: "(Optional)", showsInvalid: false, error: nil) {
-                LiteCardholderNameField(lite, chrome: .plain)
+                LiteCardholderNameField(lite: lite, style: .plain)
             }
             if showStoreToggle { storeToggle }
         }
@@ -97,23 +97,23 @@ struct LiteCardEntryView: View {
                     .foregroundColor(LiteTheme.Colors.textSecondary)
                 VStack(spacing: 0) {
                     compactCell {
-                        LiteCardNumberField(lite, chrome: .plain, onShowsInvalid: { numberInvalid = $0 })
+                        LiteCardNumberField(lite: lite, style: .plain, onChange: { numberInvalid = $0.error != nil })
                     }
                     Divider().background(LiteTheme.Colors.border)
                     HStack(spacing: 0) {
                         compactCell {
-                            LiteExpiryField(lite, chrome: .plain, onShowsInvalid: { expiryInvalid = $0 })
+                            LiteExpiryField(lite: lite, style: .plain, onChange: { expiryInvalid = $0.error != nil })
                         }
                         Rectangle()
                             .fill(LiteTheme.Colors.border)
                             .frame(width: 1, height: LiteTheme.inputHeight)
                         compactCell {
-                            LiteCVVField(lite, chrome: .plain, onShowsInvalid: { cvvInvalid = $0 })
+                            LiteCvvField(lite: lite, style: .plain, onChange: { cvvInvalid = $0.error != nil })
                         }
                     }
                     Divider().background(LiteTheme.Colors.border)
                     compactCell {
-                        LiteCardholderNameField(lite, chrome: .plain)
+                        LiteCardholderNameField(lite: lite, style: .plain)
                     }
                 }
                 .overlay(
@@ -160,15 +160,15 @@ struct LiteCardEntryView: View {
                         .frame(width: 24, height: 24)
                         .foregroundColor(LiteTheme.Colors.textSecondary)
                     LiteCardNumberField(
-                        lite,
-                        chrome: .plain,
-                        showsBrandAccessory: false,
-                        onShowsInvalid: { numberInvalid = $0 }
+                        lite: lite,
+                        style: .plain,
+                        showsBrandIcon: false,
+                        onChange: { numberInvalid = $0.error != nil }
                     )
                     .frame(maxWidth: .infinity)
-                    LiteExpiryField(lite, chrome: .plain, onShowsInvalid: { expiryInvalid = $0 })
+                    LiteExpiryField(lite: lite, style: .plain, onChange: { expiryInvalid = $0.error != nil })
                         .frame(minWidth: expiryWidth)
-                    LiteCVVField(lite, chrome: .plain, onShowsInvalid: { cvvInvalid = $0 })
+                    LiteCvvField(lite: lite, style: .plain, onChange: { cvvInvalid = $0.error != nil })
                         .frame(minWidth: cvvWidth)
                 }
                 .padding(.horizontal, LiteTheme.Spacing.m)
@@ -185,7 +185,7 @@ struct LiteCardEntryView: View {
                 }
             }
             pillField(label: "Cardholder Name", labelSuffix: "(Optional)", showsInvalid: false, error: nil) {
-                LiteCardholderNameField(lite, chrome: .plain)
+                LiteCardholderNameField(lite: lite, style: .plain)
             }
             if showStoreToggle { storeToggle }
         }
@@ -224,9 +224,7 @@ struct LiteCardEntryView: View {
                         .foregroundColor(LiteTheme.Colors.textSecondary)
                 }
             }
-            content()
-                .padding(.horizontal, LiteTheme.Spacing.m)
-                .frame(height: LiteTheme.inputHeight)
+            filledRow(content())
                 .overlay(
                     RoundedRectangle(cornerRadius: LiteTheme.Radii.pill, style: .continuous)
                         .stroke(showsInvalid ? LiteTheme.Colors.error : LiteTheme.Colors.border, lineWidth: 1)
@@ -240,9 +238,16 @@ struct LiteCardEntryView: View {
     }
 
     private func compactCell<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .padding(.horizontal, LiteTheme.Spacing.m)
-            .frame(maxWidth: .infinity, minHeight: LiteTheme.inputHeight, maxHeight: LiteTheme.inputHeight, alignment: .leading)
+        filledRow(content())
+    }
+
+    private func filledRow<Content: View>(_ field: Content) -> some View {
+        GeometryReader { proxy in
+            field
+                .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .padding(.horizontal, LiteTheme.Spacing.m)
+        .frame(maxWidth: .infinity, minHeight: LiteTheme.inputHeight, maxHeight: LiteTheme.inputHeight)
     }
 }
 #endif

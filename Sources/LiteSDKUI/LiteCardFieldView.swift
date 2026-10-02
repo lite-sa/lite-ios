@@ -2,183 +2,193 @@
 import SwiftUI
 import LiteSDKCore
 
-/// Internal SwiftUI card fields used by `LiteCardEntryView` / the payment form.
-/// Not a merchant integration API — use `LitePaymentSheet` or `LitePaymentForm`.
-struct LiteCardNumberField: View {
+/// SwiftUI card number field. The typed number stays inside the SDK view.
+///
+/// `onAdvance` fires on keyboard return. It does not fire when the number first becomes valid, and it does not pay.
+public struct LiteCardNumberField: View {
     private let lite: Lite
-    private let chrome: LiteCardField.Chrome
-    private let showsBrandAccessory: Bool
-    private let onChange: ((FieldState) -> Void)?
-    private let onShowsInvalid: ((Bool) -> Void)?
+    private let style: LiteFieldStyle
+    private let showsBrandIcon: Bool
+    private let onChange: ((LiteCardFieldChange) -> Void)?
+    private let onAdvance: (() -> Void)?
 
-    init(
-        _ lite: Lite,
-        chrome: LiteCardField.Chrome = .system,
-        showsBrandAccessory: Bool = true,
-        onChange: ((FieldState) -> Void)? = nil,
-        onShowsInvalid: ((Bool) -> Void)? = nil
+    public init(
+        lite: Lite,
+        style: LiteFieldStyle = .standard,
+        showsBrandIcon: Bool = true,
+        onChange: ((LiteCardFieldChange) -> Void)? = nil,
+        onAdvance: (() -> Void)? = nil
     ) {
         self.lite = lite
-        self.chrome = chrome
-        self.showsBrandAccessory = showsBrandAccessory
+        self.style = style
+        self.showsBrandIcon = showsBrandIcon
         self.onChange = onChange
-        self.onShowsInvalid = onShowsInvalid
+        self.onAdvance = onAdvance
     }
 
-    var body: some View {
-        LiteFieldRepresentable(
-            type: .cardNumber,
-            lite: lite,
-            chrome: chrome,
-            showsBrandAccessory: showsBrandAccessory,
+    public var body: some View {
+        LiteCardFieldRepresentable(
+            style: style,
+            showsBrandIcon: showsBrandIcon,
             onChange: onChange,
-            onShowsInvalid: onShowsInvalid
+            onAdvance: onAdvance,
+            make: { LiteCardNumberFieldView(lite: lite, style: style) }
         )
+        .frame(minHeight: style.minHeight)
     }
 }
 
-struct LiteExpiryField: View {
+/// SwiftUI expiry field (`MM/YY`).
+///
+/// `onAdvance` fires on keyboard return and when the date first becomes valid. It does not pay.
+public struct LiteExpiryField: View {
     private let lite: Lite
-    private let chrome: LiteCardField.Chrome
-    private let onChange: ((FieldState) -> Void)?
-    private let onShowsInvalid: ((Bool) -> Void)?
+    private let style: LiteFieldStyle
+    private let onChange: ((LiteCardFieldChange) -> Void)?
+    private let onAdvance: (() -> Void)?
 
-    init(
-        _ lite: Lite,
-        chrome: LiteCardField.Chrome = .system,
-        onChange: ((FieldState) -> Void)? = nil,
-        onShowsInvalid: ((Bool) -> Void)? = nil
+    public init(
+        lite: Lite,
+        style: LiteFieldStyle = .standard,
+        onChange: ((LiteCardFieldChange) -> Void)? = nil,
+        onAdvance: (() -> Void)? = nil
     ) {
         self.lite = lite
-        self.chrome = chrome
+        self.style = style
         self.onChange = onChange
-        self.onShowsInvalid = onShowsInvalid
+        self.onAdvance = onAdvance
     }
 
-    var body: some View {
-        LiteFieldRepresentable(
-            type: .expiry,
-            lite: lite,
-            chrome: chrome,
-            showsBrandAccessory: true,
+    public var body: some View {
+        LiteCardFieldRepresentable(
+            style: style,
+            showsBrandIcon: true,
             onChange: onChange,
-            onShowsInvalid: onShowsInvalid
+            onAdvance: onAdvance,
+            make: { LiteExpiryFieldView(lite: lite, style: style) }
         )
+        .frame(minHeight: style.minHeight)
     }
 }
 
-struct LiteCVVField: View {
+/// SwiftUI CVV field.
+///
+/// The number pad has no return key, so `onAdvance` does not fire from the keyboard. It does not pay.
+public struct LiteCvvField: View {
     private let lite: Lite
-    private let chrome: LiteCardField.Chrome
-    private let onChange: ((FieldState) -> Void)?
-    private let onShowsInvalid: ((Bool) -> Void)?
+    private let style: LiteFieldStyle
+    private let onChange: ((LiteCardFieldChange) -> Void)?
+    private let onAdvance: (() -> Void)?
 
-    init(
-        _ lite: Lite,
-        chrome: LiteCardField.Chrome = .system,
-        onChange: ((FieldState) -> Void)? = nil,
-        onShowsInvalid: ((Bool) -> Void)? = nil
+    public init(
+        lite: Lite,
+        style: LiteFieldStyle = .standard,
+        onChange: ((LiteCardFieldChange) -> Void)? = nil,
+        onAdvance: (() -> Void)? = nil
     ) {
         self.lite = lite
-        self.chrome = chrome
+        self.style = style
         self.onChange = onChange
-        self.onShowsInvalid = onShowsInvalid
+        self.onAdvance = onAdvance
     }
 
-    var body: some View {
-        LiteFieldRepresentable(
-            type: .cvv,
-            lite: lite,
-            chrome: chrome,
-            showsBrandAccessory: true,
+    public var body: some View {
+        LiteCardFieldRepresentable(
+            style: style,
+            showsBrandIcon: true,
             onChange: onChange,
-            onShowsInvalid: onShowsInvalid
+            onAdvance: onAdvance,
+            make: { LiteCvvFieldView(lite: lite, style: style) }
         )
+        .frame(minHeight: style.minHeight)
     }
 }
 
-struct LiteCardholderNameField: View {
+/// SwiftUI cardholder name field. Optional for pay.
+///
+/// `onAdvance` fires on keyboard return. It does not pay.
+public struct LiteCardholderNameField: View {
     private let lite: Lite
-    private let chrome: LiteCardField.Chrome
-    private let onChange: ((FieldState) -> Void)?
-    private let onShowsInvalid: ((Bool) -> Void)?
+    private let style: LiteFieldStyle
+    private let onChange: ((LiteCardFieldChange) -> Void)?
+    private let onAdvance: (() -> Void)?
 
-    init(
-        _ lite: Lite,
-        chrome: LiteCardField.Chrome = .system,
-        onChange: ((FieldState) -> Void)? = nil,
-        onShowsInvalid: ((Bool) -> Void)? = nil
+    public init(
+        lite: Lite,
+        style: LiteFieldStyle = .standard,
+        onChange: ((LiteCardFieldChange) -> Void)? = nil,
+        onAdvance: (() -> Void)? = nil
     ) {
         self.lite = lite
-        self.chrome = chrome
+        self.style = style
         self.onChange = onChange
-        self.onShowsInvalid = onShowsInvalid
+        self.onAdvance = onAdvance
     }
 
-    var body: some View {
-        LiteFieldRepresentable(
-            type: .cardholderName,
-            lite: lite,
-            chrome: chrome,
-            showsBrandAccessory: true,
+    public var body: some View {
+        LiteCardFieldRepresentable(
+            style: style,
+            showsBrandIcon: true,
             onChange: onChange,
-            onShowsInvalid: onShowsInvalid
+            onAdvance: onAdvance,
+            make: { LiteCardholderNameFieldView(lite: lite, style: style) }
         )
+        .frame(minHeight: style.minHeight)
     }
 }
 
-/// Internal bridge from a `LiteCardField` (UIView) into SwiftUI, registering it with `Lite`.
-private struct LiteFieldRepresentable: UIViewRepresentable {
-    let type: CardElementType
-    let lite: Lite
-    let chrome: LiteCardField.Chrome
-    let showsBrandAccessory: Bool
-    let onChange: ((FieldState) -> Void)?
-    let onShowsInvalid: ((Bool) -> Void)?
+private struct LiteCardFieldRepresentable: UIViewRepresentable {
+    let style: LiteFieldStyle
+    let showsBrandIcon: Bool
+    let onChange: ((LiteCardFieldChange) -> Void)?
+    let onAdvance: (() -> Void)?
+    let make: () -> LiteCardFieldHost
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(lite: lite)
+    func makeUIView(context _: Context) -> LiteCardFieldHost {
+        let view = make()
+        apply(view)
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.required, for: .vertical)
+        return view
     }
 
-    final class Coordinator {
-        let lite: Lite
-        init(lite: Lite) { self.lite = lite }
+    func updateUIView(_ uiView: LiteCardFieldHost, context _: Context) {
+        apply(uiView)
     }
 
-    func makeUIView(context: Context) -> LiteCardField {
-        let field = LiteCardField(type: type)
-        field.chrome = chrome
-        field.showsBrandAccessory = showsBrandAccessory
-        // Defer SwiftUI `@State` / ObservableObject updates out of the representable lifecycle.
-        field.onChange = { state in
-            DispatchQueue.main.async { onChange?(state) }
+    @available(iOS 16.0, *)
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiView: LiteCardFieldHost,
+        context _: Context
+    ) -> CGSize? {
+        guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
+        uiView.layoutWidth = width
+        let height: CGFloat
+        if let proposed = proposal.height, proposed.isFinite, proposed > 0 {
+            height = proposed
+        } else {
+            height = uiView.style.minHeight
         }
-        field.onShowsInvalidChange = { showsInvalid in
-            DispatchQueue.main.async { onShowsInvalid?(showsInvalid) }
-        }
-        context.coordinator.lite.register(field)
-        field.setContentCompressionResistancePriority(.required, for: .vertical)
-        return field
+        return CGSize(width: width, height: height)
     }
 
-    func updateUIView(_ uiView: LiteCardField, context _: Context) {
-        if uiView.chrome != chrome { uiView.chrome = chrome }
-        if uiView.showsBrandAccessory != showsBrandAccessory { uiView.showsBrandAccessory = showsBrandAccessory }
-        uiView.onChange = { state in
-            DispatchQueue.main.async { onChange?(state) }
-        }
-        uiView.onShowsInvalidChange = { showsInvalid in
-            DispatchQueue.main.async { onShowsInvalid?(showsInvalid) }
-        }
+    static func dismantleUIView(_ uiView: LiteCardFieldHost, coordinator _: ()) {
+        uiView.suspendKeepingValue()
     }
 
-    static func dismantleUIView(_ uiView: LiteCardField, coordinator: Coordinator) {
-        // Clear without notifying SwiftUI parents during teardown; aggregator unregister is deferred.
-        uiView.onChange = nil
-        uiView.onShowsInvalidChange = nil
-        uiView.onStateChange = nil
-        uiView.clear()
-        coordinator.lite.unregister(uiView)
+    private func apply(_ view: LiteCardFieldHost) {
+        view.style = style
+        if let number = view as? LiteCardNumberFieldView {
+            number.showsBrandIcon = showsBrandIcon
+        }
+        view.onChange = { change in
+            DispatchQueue.main.async { onChange?(change) }
+        }
+        view.onAdvance = {
+            DispatchQueue.main.async { onAdvance?() }
+        }
     }
 }
 #endif

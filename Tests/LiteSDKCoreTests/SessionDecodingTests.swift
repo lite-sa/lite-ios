@@ -56,6 +56,7 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertEqual(session.paymentMethods.card?.status, .active)
         XCTAssertEqual(session.cardPublicKey, "TFMwdExTMUNSVWRKVGc9PQ==")
         XCTAssertEqual(session.paymentMethods.card?.storedInstruments?.first?.display.last4, "4242")
+        XCTAssertNil(session.processingType)
 
         XCTAssertEqual(session.paymentMethods.applePay?.status, .inactive)
         XCTAssertEqual(session.paymentMethods.applePay?.dependencies?.merchantIdentifier, "merchant.sa.lite")
@@ -203,5 +204,23 @@ final class SessionDecodingTests: XCTestCase {
         let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(json.utf8))
         XCTAssertEqual(session.paymentMethods.applePay?.status, .active)
         XCTAssertEqual(session.paymentMethods.applePay?.dependencies?.merchantIdentifier, "merchant.sa.lite")
+    }
+
+    func testDecodesProcessingType() throws {
+        let json = """
+        {
+          "id": "sess_1", "status": "CREATED", "amount": 10000, "currency": "SAR",
+          "processing_type": "MOTO",
+          "payment_methods": { "card": { "status": "ACTIVE" } },
+          "_links": {
+            "tokenize": { "href": "https://x/tokenize", "method": "POST" },
+            "authorize": { "href": "https://x/authorize", "method": "POST" },
+            "self": { "href": "https://x/self", "method": "GET" },
+            "payment": { "href": "https://x/payment", "method": "GET" }
+          }
+        }
+        """
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(json.utf8))
+        XCTAssertEqual(session.processingType, "MOTO")
     }
 }
