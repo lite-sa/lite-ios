@@ -15,6 +15,10 @@ public enum LiteError: Error, LocalizedError {
     case threeDSTimeout
     case fieldsIncomplete([CardElementType])
     case notStarted
+    /// A payment on a tokenization session, which can save a card but has nothing to pay.
+    case sessionTypeUnsupported
+    /// A MOTO session. The mobile SDKs don't take them: create MOTO sessions for the web only.
+    case motoUnsupported
 
     public var errorDescription: String? { customerSafeMessage }
 
@@ -34,13 +38,15 @@ public enum LiteError: Error, LocalizedError {
         case .threeDSTimeout:        return "We could not verify this payment in time. Please try again."
         case .fieldsIncomplete:      return "Card details are incomplete."
         case .notStarted:            return "The SDK has not been started with a client secret."
+        case .sessionTypeUnsupported: return "This is a tokenization session: it can save a card, but not pay."
+        case .motoUnsupported:       return "MOTO sessions aren't supported on mobile."
         }
     }
 
     /// Customer-facing copy. Never includes HTTP bodies, decode payloads, or transport internals.
     public var customerSafeMessage: String {
         switch self {
-        case .invalidClientSecret, .malformedSessionURL, .notStarted:
+        case .invalidClientSecret, .malformedSessionURL, .notStarted, .motoUnsupported:
             return "Checkout is unavailable. Please try again."
         case .http, .decoding:
             return "Something went wrong. Please try again."
@@ -56,6 +62,8 @@ public enum LiteError: Error, LocalizedError {
             return "We could not verify this payment in time. Please try again."
         case .fieldsIncomplete:
             return "Please complete your card details."
+        case .sessionTypeUnsupported:
+            return "Payment is unavailable for this checkout."
         }
     }
 
@@ -83,6 +91,8 @@ extension LiteError: CustomStringConvertible {
         case .threeDSTimeout: return "ThreeDSTimeout"
         case .fieldsIncomplete: return "FieldsIncomplete"
         case .notStarted: return "NotStarted"
+        case .sessionTypeUnsupported: return "SessionTypeUnsupported"
+        case .motoUnsupported: return "MotoUnsupported"
         }
     }
 }
@@ -131,6 +141,10 @@ public enum SessionService {
             bearer: clientSecret,
             as: LiteCheckoutSession.self
         )
+        // Mobile doesn't take MOTO sessions; refuse before anything can pay or tokenize on one.
+        guard session.processingType != "MOTO" else {
+            throw LiteError.motoUnsupported
+        }
         return StartedSession(
             clientSecret: clientSecret,
             claims: claims,
@@ -145,9 +159,12 @@ public enum SessionService {
         urlSession: URLSession = .shared,
         logHandler: LiteRequestLogHandler? = nil
     ) async throws -> PaymentResponse {
+        guard let payment = started.session.links.payment else {
+            throw LiteError.sessionTypeUnsupported
+        }
         let http = LiteHTTP(urlSession: urlSession, logHandler: logHandler)
         return try await http.get(
-            urlString: started.session.links.payment.href,
+            urlString: payment.href,
             bearer: started.clientSecret,
             as: PaymentResponse.self
         )
@@ -155,11 +172,15 @@ public enum SessionService {
 
     /// After a session GET: `pending` → show the form; `failed` → error result;
     /// `completed` → GET `links.payment` once and map success to already-paid (Android A36).
+    /// A tokenization session has no payment to read, so it always shows the form.
     package static func classifyOpenedCheckout(
         started: StartedSession,
         urlSession: URLSession = .shared,
         logHandler: LiteRequestLogHandler? = nil
     ) async throws -> OpenedCheckout {
+        if started.session.isTokenization {
+            return .showForm
+        }
         switch CheckoutSessionStatus.fromWire(started.session.status) {
         case .pending:
             return .showForm

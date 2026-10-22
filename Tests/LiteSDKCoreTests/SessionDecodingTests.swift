@@ -12,6 +12,7 @@ final class SessionDecodingTests: XCTestCase {
       "expires_on": "2026-07-03T12:00:00Z",
       "channel_id": "chan_1",
       "order_id": "order_9",
+      "capture_mode": "MANUAL",
       "amount": 15099,
       "currency": "SAR",
       "payment_methods": {
@@ -52,6 +53,7 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertEqual(session.orderId, "order_9")
         XCTAssertEqual(session.channelId, "chan_1")
         XCTAssertEqual(session.expiresOn, "2026-07-03T12:00:00Z")
+        XCTAssertEqual(session.captureMode, .manual)
 
         XCTAssertEqual(session.paymentMethods.card?.status, .active)
         XCTAssertEqual(session.cardPublicKey, "TFMwdExTMUNSVWRKVGc9PQ==")
@@ -70,6 +72,14 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertEqual(session.customer?.firstName, "Jane")
         XCTAssertEqual(session.product?.name, "Pro Plan")
         XCTAssertEqual(session.checkoutConfig?.redirectUrls?.success, "https://ok")
+    }
+
+    func testDecodesUnrecognizedCaptureModeAsUnknown() throws {
+        let payload = json.replacingOccurrences(
+            of: #""capture_mode": "MANUAL""#, with: #""capture_mode": "DEFERRED""#
+        )
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(payload.utf8))
+        XCTAssertEqual(session.captureMode, .unknown)
     }
 
     func testDecodesSessionWithoutStartPaymentSessionLink() throws {
@@ -204,6 +214,102 @@ final class SessionDecodingTests: XCTestCase {
         let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(json.utf8))
         XCTAssertEqual(session.paymentMethods.applePay?.status, .active)
         XCTAssertEqual(session.paymentMethods.applePay?.dependencies?.merchantIdentifier, "merchant.sa.lite")
+    }
+
+    func testDecodesTokenizationSession() throws {
+        // No amount, currency, order or payment links — only self and tokenize.
+        let json = """
+        {
+          "id": "sess_tok", "type": "tokenization", "status": "OPEN", "expires_on": "2026-10-21T12:00:00Z",
+          "customer": { "id": "cust_8f3a91" },
+          "payment_methods": {
+            "card": {
+              "status": "ACTIVE",
+              "networks": { "visa": true, "mastercard": true, "mada": true },
+              "config": { "public_key": "x" },
+              "stored_instruments": [
+                { "id": "inst_1", "payment_method": "card", "holder_type": "CUSTOMER",
+                  "display": { "expiry_year": "30", "expiry_month": "12", "scheme": "visa", "last_4": "4242" } }
+              ]
+            }
+          },
+          "_links": {
+            "self": { "href": "https://dev.lite.sa/api/v1/checkout/sessions/sess_tok", "method": "GET" },
+            "tokenize": { "href": "https://dev.lite.sa/api/v1/checkout/instruments", "method": "POST" }
+          }
+        }
+        """
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(json.utf8))
+        XCTAssertEqual(session.type, .tokenization)
+        XCTAssertTrue(session.isTokenization)
+        XCTAssertNil(session.amount)
+        XCTAssertNil(session.currency)
+        XCTAssertNil(session.orderId)
+        XCTAssertNil(session.order)
+        XCTAssertNil(session.links.authorize)
+        XCTAssertNil(session.links.payment)
+        XCTAssertNil(session.links.startPaymentSession)
+        XCTAssertEqual(session.links.tokenize.href, "https://dev.lite.sa/api/v1/checkout/instruments")
+        XCTAssertEqual(session.customer?.id, "cust_8f3a91")
+        XCTAssertEqual(session.cardPublicKey, "x")
+        // Whatever the API lists, a tokenization session offers no stored cards.
+        XCTAssertEqual(session.paymentMethods.card?.storedInstruments?.count, 1)
+        XCTAssertEqual(session.storedCardInstruments, [])
+    }
+
+    func testDecodesTokenizationSessionWhoseCardCarriesNoStatus() throws {
+        // The live tokenization session sends the card method with neither `status` nor `networks`.
+        let json = """
+        {
+          "id": "sess_tok", "type": "tokenization", "status": "OPEN",
+          "payment_methods": {
+            "card": {
+              "config": { "public_key": "-----BEGIN PUBLIC KEY-----x" },
+              "stored_instruments": []
+            }
+          },
+          "_links": {
+            "self": { "href": "https://dev.lite.sa/api/v1/checkout/sessions/sess_tok", "method": "GET" },
+            "tokenize": { "href": "https://dev.lite.sa/api/v1/checkout/instruments", "method": "POST" }
+          }
+        }
+        """
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(json.utf8))
+        XCTAssertEqual(session.type, .tokenization)
+        let card = try XCTUnwrap(session.paymentMethods.card, "the card method must decode, not soft-fail to nil")
+        XCTAssertNil(card.status)
+        XCTAssertNil(card.networks)
+        XCTAssertEqual(card.storedInstruments?.count, 0)
+        XCTAssertEqual(session.cardPublicKey, "-----BEGIN PUBLIC KEY-----x")
+    }
+
+    func testSessionWithoutTypeIsPayment() throws {
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(json.utf8))
+        XCTAssertEqual(session.type, .payment)
+        XCTAssertFalse(session.isTokenization)
+        XCTAssertEqual(session.links.authorize?.href, "https://dev.lite.sa/api/v1/.../authorize")
+        XCTAssertEqual(session.links.payment?.href, "https://dev.lite.sa/api/v1/.../payment")
+        XCTAssertEqual(session.storedCardInstruments.map(\.id), ["inst_1"])
+    }
+
+    func testDecodesPaymentSessionType() throws {
+        let typed = json.replacingOccurrences(of: #""id": "sess_123","#, with: #""id": "sess_123", "type": "payment","#)
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(typed.utf8))
+        XCTAssertEqual(session.type, .payment)
+        XCTAssertEqual(session.amount, 15099)
+    }
+
+    func testUnknownSessionTypeIsPayment() throws {
+        // Web `isTokenizationSession`: a session that is not `tokenization` is a payment session.
+        let typed = json.replacingOccurrences(of: #""id": "sess_123","#, with: #""id": "sess_123", "type": "subscription","#)
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(typed.utf8))
+        XCTAssertEqual(session.type, .payment)
+    }
+
+    func testMotoSessionOffersNoStoredInstruments() throws {
+        let moto = json.replacingOccurrences(of: #""id": "sess_123","#, with: #""id": "sess_123", "processing_type": "MOTO","#)
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(moto.utf8))
+        XCTAssertEqual(session.storedCardInstruments, [])
     }
 
     func testDecodesProcessingType() throws {

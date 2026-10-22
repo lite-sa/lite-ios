@@ -71,7 +71,7 @@ struct LiteCardEntryView: View {
                     LiteCvvField(lite: lite, style: .plain, onChange: { cvvInvalid = $0.error != nil })
                 }
             }
-            pillField(label: "Cardholder Name", labelSuffix: "(Optional)", showsInvalid: false, error: nil) {
+            pillField(label: "Cardholder Name", labelSuffix: "(Optional)", showsInvalid: false, error: nil, canError: false) {
                 LiteCardholderNameField(lite: lite, style: .plain)
             }
             if showStoreToggle { storeToggle }
@@ -122,11 +122,7 @@ struct LiteCardEntryView: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
 
-                if let groupError {
-                    Text(groupError)
-                        .font(LiteTheme.Typography.captionMedium())
-                        .foregroundColor(LiteTheme.Colors.error)
-                }
+                errorLine(groupError)
             }
             if showStoreToggle { storeToggle }
         }
@@ -178,13 +174,9 @@ struct LiteCardEntryView: View {
                         .stroke(border, lineWidth: 1)
                 )
 
-                if let lineError {
-                    Text(lineError)
-                        .font(LiteTheme.Typography.captionMedium())
-                        .foregroundColor(LiteTheme.Colors.error)
-                }
+                errorLine(lineError)
             }
-            pillField(label: "Cardholder Name", labelSuffix: "(Optional)", showsInvalid: false, error: nil) {
+            pillField(label: "Cardholder Name", labelSuffix: "(Optional)", showsInvalid: false, error: nil, canError: false) {
                 LiteCardholderNameField(lite: lite, style: .plain)
             }
             if showStoreToggle { storeToggle }
@@ -211,6 +203,7 @@ struct LiteCardEntryView: View {
         labelSuffix: String? = nil,
         showsInvalid: Bool,
         error: String?,
+        canError: Bool = true,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: LiteTheme.Spacing.xxs) {
@@ -229,12 +222,21 @@ struct LiteCardEntryView: View {
                     RoundedRectangle(cornerRadius: LiteTheme.Radii.pill, style: .continuous)
                         .stroke(showsInvalid ? LiteTheme.Colors.error : LiteTheme.Colors.border, lineWidth: 1)
                 )
-            if let error {
-                Text(error)
-                    .font(LiteTheme.Typography.captionMedium())
-                    .foregroundColor(LiteTheme.Colors.error)
-            }
+            if canError { errorLine(error) }
         }
+    }
+
+    /// The validation message under a field. One line is always laid out, hidden while there is no
+    /// error, so the form keeps its height as fields turn valid and invalid: a content-sized Payment
+    /// Sheet would otherwise resize on every change. A longer message (a localized string, large
+    /// Dynamic Type) still wraps rather than being cut off.
+    private func errorLine(_ message: String?) -> some View {
+        Text(message ?? " ")
+            .font(LiteTheme.Typography.captionMedium())
+            .foregroundColor(LiteTheme.Colors.error)
+            .fixedSize(horizontal: false, vertical: true)
+            .opacity(message == nil ? 0 : 1)
+            .accessibilityHidden(message == nil)
     }
 
     private func compactCell<Content: View>(@ViewBuilder content: () -> Content) -> some View {

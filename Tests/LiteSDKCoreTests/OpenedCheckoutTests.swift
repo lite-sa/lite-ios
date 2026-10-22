@@ -1,5 +1,6 @@
 import XCTest
 @testable import LiteSDKCore
+import LiteSDKTestSupport
 
 final class OpenedCheckoutTests: XCTestCase {
 
@@ -17,32 +18,32 @@ final class OpenedCheckoutTests: XCTestCase {
     }
 
     func testClassifyPendingShowsFormWithoutPaymentGet() async throws {
-        ClassifyHTTPStub.reset()
+        HTTPStub.reset()
         let opened = try await classify("pending")
         XCTAssertEqual(opened, .showForm)
-        XCTAssertEqual(ClassifyHTTPStub.urls.count, 0)
+        XCTAssertEqual(HTTPStub.requests.count, 0)
     }
 
     func testClassifyLegacyActiveShowsForm() async throws {
-        ClassifyHTTPStub.reset()
+        HTTPStub.reset()
         let opened = try await classify("ACTIVE")
         XCTAssertEqual(opened, .showForm)
-        XCTAssertEqual(ClassifyHTTPStub.urls.count, 0)
+        XCTAssertEqual(HTTPStub.requests.count, 0)
     }
 
     func testClassifyFailedSkipsPaymentGet() async throws {
-        ClassifyHTTPStub.reset()
+        HTTPStub.reset()
         let opened = try await classify("failed")
         XCTAssertEqual(
             opened,
             .terminal(status: .failure, paymentId: nil, error: CheckoutSessionStatus.sessionFailedMessage)
         )
-        XCTAssertEqual(ClassifyHTTPStub.urls.count, 0)
+        XCTAssertEqual(HTTPStub.requests.count, 0)
     }
 
     func testClassifyCompletedCapturedIsAlreadyPaid() async throws {
-        ClassifyHTTPStub.reset()
-        ClassifyHTTPStub.canned = [(200, #"{"payment":{"id":"pay_1","status":"CAPTURED"}}"#)]
+        HTTPStub.reset()
+        HTTPStub.canned = [(200, #"{"payment":{"id":"pay_1","status":"CAPTURED"}}"#)]
         let opened = try await classify("completed")
         XCTAssertEqual(
             opened,
@@ -52,13 +53,13 @@ final class OpenedCheckoutTests: XCTestCase {
                 error: CheckoutSessionStatus.alreadyCompletedMessage
             )
         )
-        XCTAssertEqual(ClassifyHTTPStub.urls.count, 1)
-        XCTAssertTrue(ClassifyHTTPStub.urls[0].hasSuffix("/payment"))
+        XCTAssertEqual(HTTPStub.requests.count, 1)
+        XCTAssertTrue(HTTPStub.requests[0].url.hasSuffix("/payment"))
     }
 
     func testClassifyCompletedAuthorizedIsAlreadyPaid() async throws {
-        ClassifyHTTPStub.reset()
-        ClassifyHTTPStub.canned = [(200, #"{"payment":{"id":"pay_9","status":"AUTHORIZED"}}"#)]
+        HTTPStub.reset()
+        HTTPStub.canned = [(200, #"{"payment":{"id":"pay_9","status":"AUTHORIZED"}}"#)]
         let opened = try await classify("COMPLETE")
         XCTAssertEqual(
             opened,
@@ -71,8 +72,8 @@ final class OpenedCheckoutTests: XCTestCase {
     }
 
     func testClassifyCompletedFailedPaymentIsError() async throws {
-        ClassifyHTTPStub.reset()
-        ClassifyHTTPStub.canned = [(200, #"{"payment":{"id":"pay_1","status":"FAILED"}}"#)]
+        HTTPStub.reset()
+        HTTPStub.canned = [(200, #"{"payment":{"id":"pay_1","status":"FAILED"}}"#)]
         let opened = try await classify("completed")
         XCTAssertEqual(
             opened,
@@ -85,8 +86,8 @@ final class OpenedCheckoutTests: XCTestCase {
     }
 
     func testClassifyCompletedUnknownPaymentStatus() async throws {
-        ClassifyHTTPStub.reset()
-        ClassifyHTTPStub.canned = [(200, #"{"payment":{"id":"pay_1","status":"NOT_A_REAL_STATUS"}}"#)]
+        HTTPStub.reset()
+        HTTPStub.canned = [(200, #"{"payment":{"id":"pay_1","status":"NOT_A_REAL_STATUS"}}"#)]
         let opened = try await classify("completed")
         XCTAssertEqual(
             opened,
@@ -99,8 +100,8 @@ final class OpenedCheckoutTests: XCTestCase {
     }
 
     func testClassifyCompletedPaymentGetFailureStillNoForm() async throws {
-        ClassifyHTTPStub.reset()
-        ClassifyHTTPStub.canned = [(500, #"{"error":"nope"}"#)]
+        HTTPStub.reset()
+        HTTPStub.canned = [(500, #"{"error":"nope"}"#)]
         let opened = try await classify("completed")
         XCTAssertEqual(
             opened,
@@ -110,20 +111,89 @@ final class OpenedCheckoutTests: XCTestCase {
                 error: LiteError.http(status: 500, body: nil).customerSafeMessage
             )
         )
-        XCTAssertEqual(ClassifyHTTPStub.urls.count, 1)
-        XCTAssertTrue(ClassifyHTTPStub.urls[0].hasSuffix("/payment"))
+        XCTAssertEqual(HTTPStub.requests.count, 1)
+        XCTAssertTrue(HTTPStub.requests[0].url.hasSuffix("/payment"))
     }
 
-    private func classify(_ sessionStatus: String) async throws -> OpenedCheckout {
-        let started = try startedSession(status: sessionStatus)
+    func testClassifyTokenizationSessionSkipsStatusBranch() async throws {
+        // A tokenization session has no payment to read: no GET, no already_completed.
+        HTTPStub.reset()
+        HTTPStub.canned = [(200, #"{"payment":{"id":"pay_1","status":"CAPTURED"}}"#)]
+        for status in ["completed", "failed", "OPEN"] {
+            let opened = try await classify(status, type: "tokenization")
+            XCTAssertEqual(opened, .showForm, status)
+        }
+        XCTAssertEqual(HTTPStub.requests.count, 0)
+    }
+
+    func testClassifyTokenizationSessionWhoseCardCarriesNoStatus() async throws {
+        HTTPStub.reset()
+        let started = try startedSession(json: """
+        {
+          "id": "sess_1", "type": "tokenization", "status": "OPEN",
+          "payment_methods": {
+            "card": { "config": { "public_key": "x" }, "stored_instruments": [] }
+          },
+          "_links": {
+            "tokenize": { "href": "https://dev.lite.sa/api/v1/tokenize", "method": "POST" },
+            "self": { "href": "https://dev.lite.sa/api/v1/checkout/sessions/sess_1", "method": "GET" }
+          }
+        }
+        """)
+        XCTAssertNotNil(started.session.paymentMethods.card)
+        let opened = try await SessionService.classifyOpenedCheckout(
+            started: started,
+            urlSession: Self.stubbedURLSession()
+        )
+        XCTAssertEqual(opened, .showForm)
+        XCTAssertEqual(HTTPStub.requests.count, 0)
+    }
+
+    func testFetchPaymentOnTokenizationSessionSendsNothing() async throws {
+        HTTPStub.reset()
+        let started = try startedSession(status: "completed", type: "tokenization")
+        do {
+            _ = try await SessionService.fetchPayment(started: started, urlSession: Self.stubbedURLSession())
+            XCTFail("expected sessionTypeUnsupported")
+        } catch LiteError.sessionTypeUnsupported {
+            // expected
+        }
+        XCTAssertEqual(HTTPStub.requests.count, 0)
+    }
+
+    private func classify(_ sessionStatus: String, type: String? = nil) async throws -> OpenedCheckout {
+        let started = try startedSession(status: sessionStatus, type: type)
         return try await SessionService.classifyOpenedCheckout(
             started: started,
             urlSession: Self.stubbedURLSession()
         )
     }
 
-    private func startedSession(status: String) throws -> SessionService.StartedSession {
-        let json = """
+    private func startedSession(status: String, type: String? = nil) throws -> SessionService.StartedSession {
+        let json: String
+        if let type {
+            json = """
+            {
+              "id": "sess_1",
+              "type": "\(type)",
+              "status": "\(status)",
+              "payment_methods": {
+                "card": { "status": "ACTIVE", "config": { "public_key": "x" } }
+              },
+              "_links": {
+                "tokenize": { "href": "https://dev.lite.sa/api/v1/tokenize", "method": "POST" },
+                "self": { "href": "https://dev.lite.sa/api/v1/checkout/sessions/sess_1", "method": "GET" }
+              }
+            }
+            """
+        } else {
+            json = paymentSessionJSON(status: status)
+        }
+        return try startedSession(json: json)
+    }
+
+    private func paymentSessionJSON(status: String) -> String {
+        """
         {
           "id": "sess_1",
           "status": "\(status)",
@@ -140,6 +210,9 @@ final class OpenedCheckoutTests: XCTestCase {
           }
         }
         """
+    }
+
+    private func startedSession(json: String) throws -> SessionService.StartedSession {
         let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(json.utf8))
         let claims = LiteJWTClaims(
             sessionId: "sess_1",
@@ -160,41 +233,7 @@ final class OpenedCheckoutTests: XCTestCase {
 
     private static func stubbedURLSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [ClassifyHTTPStub.self]
+        config.protocolClasses = [HTTPStub.self]
         return URLSession(configuration: config)
-    }
-}
-
-private final class ClassifyHTTPStub: URLProtocol {
-    static var canned: [(Int, String)] = []
-    static var urls: [String] = []
-
-    static func reset() {
-        canned = []
-        urls = []
-    }
-
-    override class func canInit(with _: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        Self.urls.append(request.url?.absoluteString ?? "")
-        let (status, payload) = Self.canned.isEmpty
-            ? (500, "{}")
-            : Self.canned.removeFirst()
-        let data = Data(payload.utf8)
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: data)
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {
-        // Responses are delivered synchronously, so there is no work to cancel.
     }
 }

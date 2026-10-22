@@ -35,13 +35,24 @@ let package = Package(
             dependencies: ["LiteSDKCore", "LiteSDKCrypto"],
             resources: [.process("Resources")]
         ),
+        // The fake network the test targets share. Not a product, so it never ships.
+        .target(
+            name: "LiteSDKTestSupport",
+            path: "Tests/LiteSDKTestSupport"
+        ),
         .testTarget(
             name: "LiteSDKCoreTests",
-            dependencies: ["LiteSDKCore"]
+            dependencies: ["LiteSDKCore", "LiteSDKTestSupport"]
         ),
         .testTarget(
             name: "LiteSDKCryptoTests",
             dependencies: ["LiteSDKCrypto", "LiteSDKCore"]
+        ),
+        // `Lite` itself. Gated like LiteSDKUI, so it is empty under `swift test` on the macOS
+        // host and runs on an iOS simulator (`xcodebuild test`).
+        .testTarget(
+            name: "LiteSDKUITests",
+            dependencies: ["LiteSDKUI", "LiteSDKCore", "LiteSDKCrypto", "LiteSDKTestSupport"]
         ),
     ]
 )

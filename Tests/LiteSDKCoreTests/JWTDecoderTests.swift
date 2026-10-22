@@ -34,6 +34,30 @@ final class JWTDecoderTests: XCTestCase {
         XCTAssertEqual(claims.currency, "SAR")
     }
 
+    /// The API issues snake_case claims; this is the shape a real `client_secret` has.
+    func testDecodesSnakeCaseClaims() throws {
+        let token = try makeToken(payload: [
+            "session_id": "sess_123",
+            "merchant_id": "merch_456",
+            "iss": "https://dev.lite.sa",
+            "channel_id": "chan_789",
+            "order_id": "ord_1",
+            "session_type": "tokenization",
+        ])
+        let claims = try JWTDecoder.decodeClaims(token)
+        XCTAssertEqual(claims.sessionId, "sess_123")
+        XCTAssertEqual(claims.merchantId, "merch_456")
+        XCTAssertEqual(claims.channelId, "chan_789")
+        XCTAssertEqual(claims.orderId, "ord_1")
+    }
+
+    func testMissingSnakeCaseMerchantThrows() throws {
+        let token = try makeToken(payload: ["session_id": "s", "iss": "https://lite.sa"])
+        XCTAssertThrowsError(try JWTDecoder.decodeClaims(token)) {
+            XCTAssertEqual($0 as? JWTError, .missingRequiredClaims)
+        }
+    }
+
     func testDecodesWithoutOptionalClaims() throws {
         let token = try makeToken(payload: [
             "sessionId": "s",

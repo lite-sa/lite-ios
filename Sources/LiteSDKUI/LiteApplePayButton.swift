@@ -87,6 +87,11 @@ private struct ApplePayButtonRepresentable: UIViewRepresentable {
         @objc func tapped() {
             guard controller == nil else { return }
             Task { @MainActor in
+                // A tokenization session has nothing to pay: refuse before the Apple Pay sheet opens.
+                if let refusal = lite.paymentUIRefusal {
+                    onResult(refusal)
+                    return
+                }
                 do {
                     let request = try makePaymentRequest()
                     let controller = PKPaymentAuthorizationController(paymentRequest: request)
@@ -124,6 +129,9 @@ private struct ApplePayButtonRepresentable: UIViewRepresentable {
             guard method.status == .active else {
                 throw LiteError.applePayNotActive
             }
+            guard let amount = session.amount, let currency = session.currency else {
+                throw LiteError.sessionTypeUnsupported
+            }
 
             // Web throws if dependencies / merchant_identifier are missing.
             guard let merchantId = method.dependencies?.merchantIdentifier, !merchantId.isEmpty else {
@@ -152,13 +160,13 @@ private struct ApplePayButtonRepresentable: UIViewRepresentable {
             let request = PKPaymentRequest()
             request.merchantIdentifier = merchantId
             request.countryCode = countryCode
-            request.currencyCode = session.currency
+            request.currencyCode = currency
             request.supportedNetworks = networks
             request.merchantCapabilities = Self.merchantCapabilities(from: capabilityStrings)
             request.paymentSummaryItems = [
                 PKPaymentSummaryItem(
                     label: "Total",
-                    amount: NSDecimalNumber(decimal: ApplePayConfig.majorUnitAmount(minorUnits: session.amount)),
+                    amount: NSDecimalNumber(decimal: ApplePayConfig.majorUnitAmount(minorUnits: amount)),
                     type: .final
                 )
             ]

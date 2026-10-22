@@ -12,12 +12,14 @@ final class PaymentEncodingTests: XCTestCase {
     func testCreateInstrumentRequestBody() throws {
         let obj = try encode(CreateInstrumentRequest(
             holderId: "cust_1",
+            type: "card",
             paymentMethod: "card",
             holderType: "CUSTOMER",
             data: "JWE.PAYLOAD",
             futureUsage: "unscheduled"
         ))
         XCTAssertEqual(obj["holder_id"] as? String, "cust_1")
+        XCTAssertEqual(obj["type"] as? String, "card")
         XCTAssertEqual(obj["payment_method"] as? String, "card")
         XCTAssertEqual(obj["holder_type"] as? String, "CUSTOMER")
         XCTAssertEqual(obj["data"] as? String, "JWE.PAYLOAD")
@@ -26,9 +28,16 @@ final class PaymentEncodingTests: XCTestCase {
 
     func testCreateInstrumentOmitsFutureUsageWhenNil() throws {
         let obj = try encode(CreateInstrumentRequest(
-            holderId: "c", paymentMethod: "card", holderType: "CUSTOMER", data: "x", futureUsage: nil
+            holderId: "c", type: "card", paymentMethod: "card", holderType: "CUSTOMER", data: "x", futureUsage: nil
         ))
         XCTAssertNil(obj["future_usage"])
+    }
+
+    func testInstrumentTypeIsLowerSnakeCase() {
+        // The API rejects a camelCase `type` with a 400; `payment_method` keeps the old camelCase.
+        XCTAssertEqual(PaymentMethod.card.instrumentType.rawValue, "card")
+        XCTAssertEqual(PaymentMethod.applePay.instrumentType.rawValue, "apple_pay")
+        XCTAssertEqual(PaymentMethod.applePay.rawValue, "applePay")
     }
 
     func testAuthorizeRequestBody() throws {
@@ -100,5 +109,61 @@ final class PaymentEncodingTests: XCTestCase {
         XCTAssertEqual(response.payment.status, .unknown)
         XCTAssertTrue(PaymentStatus.finalStatuses.contains(.unknown))
         XCTAssertEqual(response.payment.status.operationStatus, .failure)
+    }
+
+    // The capture mode is signed into the session token and the edge rejects an authorize that
+    // asks for a different one, so the builder must echo the session rather than choose.
+    func testAuthorizeMirrorsSessionCaptureMode() throws {
+        let request = try buildAuthorizeRequest(sessionJSON: sessionJSON(captureMode: "MANUAL"))
+        XCTAssertEqual(request.captureOptions.captureMode, "MANUAL")
+    }
+
+    func testAuthorizeFallsBackToInstantCaptureWhenTheSessionCarriesNone() throws {
+        let request = try buildAuthorizeRequest(sessionJSON: sessionJSON(captureMode: nil))
+        XCTAssertEqual(request.captureOptions.captureMode, "INSTANT")
+    }
+
+    func testAuthorizeFallsBackToInstantCaptureWhenTheSessionModeIsUnrecognized() throws {
+        let request = try buildAuthorizeRequest(sessionJSON: sessionJSON(captureMode: "DEFERRED"))
+        XCTAssertEqual(request.captureOptions.captureMode, "INSTANT")
+    }
+
+    private func buildAuthorizeRequest(sessionJSON: String) throws -> LitePaymentRequest {
+        let session = try JSONDecoder().decode(LiteCheckoutSession.self, from: Data(sessionJSON.utf8))
+        // The token's `iss` is the origin the session links live on; read it off the fixture rather
+        // than spelling the host a second time here.
+        let selfLink = try XCTUnwrap(URL(string: session.links.selfLink.href))
+        let iss = try "\(XCTUnwrap(selfLink.scheme))://\(XCTUnwrap(selfLink.host))"
+        let claims = LiteJWTClaims(
+            sessionId: session.id, merchantId: "m", iss: iss,
+            channelId: nil, orderId: nil, amount: nil, currency: nil
+        )
+        let started = SessionService.StartedSession(
+            clientSecret: "secret", claims: claims, endpoints: LiteEndpoints(iss: claims.iss), session: session
+        )
+        let device = Device(
+            userAgent: "LiteSDK-iOS", acceptHeader: "*/*", language: "en-SA",
+            screenHeight: 2556, screenWidth: 1179, colorDepth: 32,
+            timezone: -180, javaEnabled: false, javaScriptEnabled: true
+        )
+        return try PaymentService(started: started).buildPaymentRequest(instrumentId: "inst_1", device: device)
+    }
+
+    private func sessionJSON(captureMode: String?) -> String {
+        let captureModeLine = captureMode.map { "\"capture_mode\": \"\($0)\"," } ?? ""
+        return """
+        {
+          "id": "sess_1", "status": "CREATED", "amount": 10000, "currency": "SAR", "order_id": "order_9",
+          \(captureModeLine)
+          "customer": { "id": "cust_1" },
+          "payment_methods": { "card": { "status": "ACTIVE", "config": { "public_key": "x" } } },
+          "_links": {
+            "tokenize": { "href": "https://x/tokenize", "method": "POST" },
+            "authorize": { "href": "https://x/authorize", "method": "POST" },
+            "self": { "href": "https://x/self", "method": "GET" },
+            "payment": { "href": "https://x/payment", "method": "GET" }
+          }
+        }
+        """
     }
 }

@@ -12,7 +12,8 @@ import PassKit
 /// `Lite` is stateful: it holds the checkout session, tracks card-field validity, and runs the whole
 /// payment internally — the merchant never sees the public key, the ciphertext, or the network calls.
 /// Create one (`@StateObject var lite = Lite()`), `start(clientSecret:)` to load the session, bind the
-/// card fields to it, then call `pay()`.
+/// card fields to it, then call `pay()` — or `tokenize()` on a tokenization session, which saves the
+/// card without paying.
 @MainActor
 public final class Lite: ObservableObject {
 
@@ -82,13 +83,14 @@ public final class Lite: ObservableObject {
     /// True when the required new-card fields are all currently valid.
     public var isComplete: Bool { aggregator.isComplete }
 
-    /// True when `pay()` can be invoked — stored instrument selected (and enabled), or new-card fields complete.
-    /// New-card brand is not gated client-side; the server rejects unsupported schemes.
+    /// True when `pay()` can be invoked — an instrument selected (and not a listed one whose scheme is
+    /// off), or new-card fields complete. New-card brand is not gated client-side; the server rejects
+    /// unsupported schemes.
     public var isReadyToPay: Bool {
         guard !isPayLocked else { return false }
         switch cardSelection {
         case .storedInstrument(let id):
-            return getStoredInstruments().first(where: { $0.id == id })?.enabled == true
+            return canPayWithInstrument(id)
         case .newCard:
             return aggregator.isComplete
         }
@@ -101,11 +103,14 @@ public final class Lite: ObservableObject {
     @Published public private(set) var isApplePayAvailable = false
 
     /// Session-only check (web checkout `payment_methods?.applePay?.status === 'ACTIVE'`).
+    /// False on a tokenization session, which has nothing to pay.
     public var isApplePayEnabledInSession: Bool {
-        session?.paymentMethods.applePay?.status == .active
+        guard session?.isTokenization != true else { return false }
+        return session?.paymentMethods.applePay?.status == .active
     }
 
     private let aggregator = LiteCardAggregator()
+    private let tokenizer = TokenizeCoordinator()
     private let threeDS: ThreeDSecurePresenting
     private var started: SessionService.StartedSession?
     private var cancellables: Set<AnyCancellable> = []
@@ -131,17 +136,8 @@ public final class Lite: ObservableObject {
         enabledOnly: Bool = false
     ) -> [StoredInstrument] {
         guard paymentMethod == "card" else { return [] }
-        // A stored instrument carries a future-usage agreement. The payment API rejects that
-        // combined with MOTO, so the web SDK returns nothing here.
-        if session?.processingType == "MOTO" {
-            return []
-        }
-        let networks = session?.paymentMethods.card?.networks
-        let instruments = (session?.paymentMethods.card?.storedInstruments ?? []).map { instrument in
-            var copy = instrument
-            copy.enabled = CardNetworks.isSchemeEnabled(instrument.display.scheme, networks: networks)
-            return copy
-        }
+        // Empty on a MOTO or tokenization session (`storedCardInstruments`).
+        let instruments = session?.storedCardInstruments ?? []
         if enabledOnly {
             return instruments.filter(\.enabled)
         }
@@ -160,13 +156,26 @@ public final class Lite: ObservableObject {
         CardNetworks.isSchemeEnabled(scheme, networks: session?.paymentMethods.card?.networks)
     }
 
-    /// Select a saved card for the next `pay()` call. No-ops when the scheme is disabled.
+    /// Select an instrument for the next `pay()` call: a saved card from `getStoredInstruments()`, or
+    /// any other id, such as one `tokenize()` returned. No-ops for a listed card whose scheme is disabled.
     public func selectStoredInstrument(_ id: String) {
-        guard let instrument = getStoredInstruments().first(where: { $0.id == id }),
-              instrument.enabled
-        else { return }
+        guard canPayWithInstrument(id) else { return }
         unlockPay()
         cardSelection = .storedInstrument(id: id)
+    }
+
+    /// Whether `pay(instrumentId:)` may send this id. Never on a MOTO session: the API rejects a
+    /// stored instrument's future-usage agreement with MOTO, which is why the session lists none.
+    private func canPayWithInstrument(_ id: String) -> Bool {
+        !id.isEmpty && !isMotoSession && !isListedButDisabled(id)
+    }
+
+    private var isMotoSession: Bool { session?.processingType == "MOTO" }
+
+    /// A saved card the session lists, whose scheme the session turned off. An id the session
+    /// doesn't list, such as a tokenized one, is the API's to accept or refuse.
+    private func isListedButDisabled(_ id: String) -> Bool {
+        getStoredInstruments().first(where: { $0.id == id })?.enabled == false
     }
 
     /// Select the new-card entry path for the next `pay()` call.
@@ -180,6 +189,10 @@ public final class Lite: ObservableObject {
     public func start(clientSecret: String) async {
         inFlightPay?.cancel()
         inFlightPay = nil
+        tokenizer.reset()
+        // Forget the previous session first, so nothing pays or tokenizes against it while the
+        // replacement loads, or after it fails to.
+        started = nil
         phase = .loadingSession
         session = nil
         lastPayResult = nil
@@ -249,6 +262,7 @@ public final class Lite: ObservableObject {
     public func reset() {
         inFlightPay?.cancel()
         inFlightPay = nil
+        tokenizer.reset()
         started = nil
         session = nil
         lastPayResult = nil
@@ -279,7 +293,8 @@ public final class Lite: ObservableObject {
         }
     }
 
-    /// Pay with a stored instrument (web `{ instrument_id }` — skips tokenize).
+    /// Pay with an instrument (web `{ instrument_id }` — skips tokenize): a saved card, or any other id,
+    /// such as one `tokenize()` returned on a tokenization session.
     public func pay(instrumentId: String) async -> PayResult {
         await withPayIdempotency { [self] in
             await self.payStoredInstrument(instrumentId: instrumentId)
@@ -299,6 +314,27 @@ public final class Lite: ObservableObject {
     ) async -> PayResult {
         await withPayIdempotency { [self] in
             await self.payApplePay(tokenJSON: tokenJSON, afterAuthorize: afterAuthorize)
+        }
+    }
+
+    /// Tokenize the card in the card fields without paying, on a tokenization session (web
+    /// `lite.tokenize`). Never authorizes and never polls. Returns the instrument, or why there is
+    /// none; it does not throw for a card or session that cannot be tokenized.
+    ///
+    /// A session tokenizes one card: a failed attempt can be retried, a successful one cannot.
+    /// A second call while one is in flight gets the same result.
+    public func tokenize(storeForFuture: Bool = false) async -> TokenizeResult {
+        await tokenizer.tokenize(
+            started: started,
+            storeForFuture: storeForFuture,
+            logHandler: makeLogHandler()
+        ) { [aggregator] publicKey in
+            // The same collect + encrypt as `payNewCard`: the card goes to the API as `pay()`
+            // sends it, and whether it is accepted is the API's call.
+            guard aggregator.isComplete else {
+                throw LiteError.fieldsIncomplete(LiteCardAggregator.requiredFields)
+            }
+            return try aggregator.encrypt(base64WrappedPEMPublicKey: publicKey)
         }
     }
 
@@ -341,6 +377,11 @@ public final class Lite: ObservableObject {
 
     private func payNewCard(storeForFuture: Bool) async -> PayResult {
         guard let started else { return failure(LiteError.notStarted) }
+        // Before the card is read: tokenizing first would leave an instrument behind for a
+        // payment that cannot happen.
+        if started.session.isTokenization {
+            return Self.sessionTypeUnsupportedResult
+        }
         guard started.session.paymentMethods.card?.status == .active else {
             return failure(LiteError.cardNotActive)
         }
@@ -360,7 +401,7 @@ public final class Lite: ObservableObject {
             let jwe = try aggregator.encrypt(base64WrappedPEMPublicKey: publicKey)
             let service = PaymentService(started: started, logHandler: makeLogHandler())
             let instrument = try await service.createInstrument(
-                paymentMethod: "card",
+                paymentMethod: .card,
                 data: jwe,
                 storeForFuture: storeForFuture
             )
@@ -377,16 +418,19 @@ public final class Lite: ObservableObject {
 
     private func payStoredInstrument(instrumentId: String) async -> PayResult {
         guard let started else { return failure(LiteError.notStarted) }
+        if started.session.isTokenization {
+            return Self.sessionTypeUnsupportedResult
+        }
         guard started.session.paymentMethods.card?.status == .active else {
             return failure(LiteError.cardNotActive)
         }
         guard !instrumentId.isEmpty else {
             return failure(LiteError.decoding("instrument_id is required"))
         }
-        guard let instrument = getStoredInstruments().first(where: { $0.id == instrumentId }) else {
-            return failure(LiteError.decoding("Stored instrument not found"))
+        if started.session.processingType == "MOTO" {
+            return failure(LiteError.decoding("A MOTO session can't be paid with an instrument"))
         }
-        if !instrument.enabled {
+        if isListedButDisabled(instrumentId) {
             return failure(LiteError.decoding("Card scheme is not enabled for this session"))
         }
 
@@ -412,6 +456,11 @@ public final class Lite: ObservableObject {
             await afterAuthorize?(false)
             return failure(LiteError.notStarted)
         }
+        // Before the token is sent, so no Apple Pay instrument is left behind.
+        if started.session.isTokenization {
+            await afterAuthorize?(false)
+            return Self.sessionTypeUnsupportedResult
+        }
         guard let method = started.session.paymentMethods.applePay else {
             await afterAuthorize?(false)
             return failure(LiteError.applePayNotConfigured)
@@ -432,7 +481,7 @@ public final class Lite: ObservableObject {
         do {
             try Task.checkCancellation()
             let instrument = try await service.createInstrument(
-                paymentMethod: PaymentMethod.applePay.rawValue,
+                paymentMethod: .applePay,
                 data: tokenJSON,
                 storeForFuture: false
             )
@@ -609,6 +658,22 @@ public final class Lite: ObservableObject {
         }
     }
 
+    /// What every pay path, the Payment Sheet and the embeddable form return on a tokenization
+    /// session (web `refusePaymentOnTokenization`). Not recorded as `lastPayResult`: nothing was paid.
+    static let sessionTypeUnsupportedResult = PayResult(
+        status: .failure,
+        paymentId: nil,
+        error: LiteError.sessionTypeUnsupported.merchantMessage,
+        errorCode: TokenizeErrorCode.sessionTypeUnsupported
+    )
+
+    /// The result the Payment Sheet and embeddable form complete with instead of rendering the
+    /// pay UI; nil on a payment session.
+    var paymentUIRefusal: PayResult? {
+        guard session?.isTokenization == true else { return nil }
+        return Self.sessionTypeUnsupportedResult
+    }
+
     private func failure(_ error: LiteError) -> PayResult {
         PayResult(
             status: .failure,
@@ -627,7 +692,7 @@ public final class Lite: ObservableObject {
 
     private func refreshApplePayAvailability() {
         #if canImport(PassKit)
-        guard session?.paymentMethods.applePay?.status == .active else {
+        guard isApplePayEnabledInSession else {
             isApplePayAvailable = false
             return
         }

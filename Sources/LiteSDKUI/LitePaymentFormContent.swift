@@ -27,6 +27,9 @@ public struct LitePaymentFormContent: View {
 
     @State private var paying = false
     @State private var didNotifyTerminalResult = false
+    /// The tokenization session whose refusal `onPayResult` already got. `.task` re-runs each time the
+    /// form reappears (a tab switch, a back navigation), and the merchant should hear it once.
+    @State private var refusedSessionID: String?
     @State private var keyboardOverlap: CGFloat = 0
 
     public init(
@@ -101,9 +104,20 @@ public struct LitePaymentFormContent: View {
                 )
             } else if skipFormForTerminalSession {
                 EmptyView()
+            } else if lite.paymentUIRefusal != nil {
+                // A tokenization session has nothing to pay: never render the pay UI.
+                EmptyView()
             } else {
                 formBody
             }
+        }
+        .task(id: lite.paymentUIRefusal) {
+            guard let refusal = lite.paymentUIRefusal,
+                  let sessionID = lite.session?.id,
+                  refusedSessionID != sessionID
+            else { return }
+            refusedSessionID = sessionID
+            notifyPayResult(refusal)
         }
         .task(id: terminalNotificationID) {
             guard let result = terminalNotificationID.result else {
@@ -318,10 +332,10 @@ public struct LitePaymentFormContent: View {
                         Text("Pay Now")
                             .font(LiteTheme.Typography.bodySemiBold())
                             .foregroundColor(contentColor)
-                        if let session = lite.session {
+                        if let amount = lite.session?.amount, let currency = lite.session?.currency {
                             LiteMoneyAmount(
-                                amountMinor: session.amount,
-                                currency: session.currency,
+                                amountMinor: amount,
+                                currency: currency,
                                 font: LiteTheme.Typography.bodySemiBold(),
                                 color: contentColor
                             )
@@ -432,9 +446,11 @@ private struct NewCardMethodBlock: View {
         }
         .padding(LiteTheme.Spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Inside the edge: a centred stroke loses its outer half to the scroll view's side clip,
+        // leaving the left and right borders lighter than the top and bottom.
         .overlay(
             RoundedRectangle(cornerRadius: LiteTheme.Radii.card, style: .continuous)
-                .stroke(border, lineWidth: 1)
+                .strokeBorder(border, lineWidth: 1)
         )
     }
 }
@@ -500,9 +516,11 @@ private struct StoredInstrumentRow: View {
         .padding(LiteTheme.Spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(disabled ? 0.55 : 1)
+        // Inside the edge: a centred stroke loses its outer half to the scroll view's side clip,
+        // leaving the left and right borders lighter than the top and bottom.
         .overlay(
             RoundedRectangle(cornerRadius: LiteTheme.Radii.card, style: .continuous)
-                .stroke(border, lineWidth: 1)
+                .strokeBorder(border, lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)

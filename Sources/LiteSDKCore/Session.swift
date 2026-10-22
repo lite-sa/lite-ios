@@ -5,11 +5,17 @@ import os
 /// Mirrors the web `LiteCheckoutSession` (see `packages/sdk/src/types/index.ts`). Snake_case JSON
 /// keys are mapped to camelCase Swift properties. Fields the SDK doesn't yet consume (theme, full
 /// order items) are omitted — `Decodable` ignores unknown keys.
+///
+/// A tokenization session (`type: "tokenization"`) only saves a card: it has no amount, currency,
+/// order or payment links. Those fields are optional so it decodes; whatever pays or reads a
+/// payment checks them where it uses them.
 public struct LiteCheckoutSession: Decodable, Sendable {
     public let id: String
     public let status: String
-    public let amount: Int
-    public let currency: String
+    /// Absent on a tokenization session.
+    public let amount: Int?
+    /// Absent on a tokenization session.
+    public let currency: String?
     public let paymentMethods: PaymentMethodLookup
     public let links: SessionLinks
 
@@ -22,9 +28,14 @@ public struct LiteCheckoutSession: Decodable, Sendable {
     public let order: Order?
     public let product: Product?
     public let checkoutConfig: CheckoutConfig?
+    /// Absent on sessions created before the field existed.
+    public let captureMode: CaptureMode?
+    /// Absent on sessions created before the field existed, which were all payment sessions.
+    private let wireType: CheckoutSessionType?
 
     enum CodingKeys: String, CodingKey {
         case id, status, amount, currency, customer, order, product
+        case wireType = "type"
         case paymentMethods = "payment_methods"
         case links = "_links"
         case expiresOn = "expires_on"
@@ -32,11 +43,38 @@ public struct LiteCheckoutSession: Decodable, Sendable {
         case orderId = "order_id"
         case processingType = "processing_type"
         case checkoutConfig = "checkout_config"
+        case captureMode = "capture_mode"
     }
 
     /// The RSA public key (base64-wrapped PEM) used to encrypt card data, when card is configured.
     /// Package-scoped so merchants cannot read it via `lite.session` (IOS-018).
     package var cardPublicKey: String? { paymentMethods.card?.config?.publicKey }
+
+    /// What this session is for. A session without `type` is a payment session.
+    public var type: CheckoutSessionType { wireType ?? .payment }
+
+    /// Whether this session only saves a card, rather than taking a payment.
+    public var isTokenization: Bool { type == .tokenization }
+
+    /// Stored card instruments this session offers, each `enabled` from `card.networks`
+    /// (web `LiteSession.getStoredInstruments`).
+    package var storedCardInstruments: [StoredInstrument] {
+        // A stored instrument carries a future-usage agreement. The payment API rejects that
+        // combined with MOTO, so the web SDK returns nothing here.
+        if processingType == "MOTO" {
+            return []
+        }
+        // A tokenization session saves a new card; it offers none of the customer's stored ones.
+        if isTokenization {
+            return []
+        }
+        let networks = paymentMethods.card?.networks
+        return (paymentMethods.card?.storedInstruments ?? []).map { instrument in
+            var copy = instrument
+            copy.enabled = CardNetworks.isSchemeEnabled(instrument.display.scheme, networks: networks)
+            return copy
+        }
+    }
 
     public struct Product: Decodable, Sendable {
         public let name: String
@@ -57,14 +95,30 @@ public struct LiteCheckoutSession: Decodable, Sendable {
     }
 }
 
+/// What a checkout session is for (web `CheckoutSessionType`). A `payment` session takes a payment;
+/// a `tokenization` session only saves a card.
+public enum CheckoutSessionType: String, Decodable, Sendable, Equatable {
+    case payment
+    case tokenization
+
+    /// A session that is not `tokenization` is a payment session (web `isTokenizationSession`).
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = CheckoutSessionType(rawValue: raw) ?? .payment
+    }
+}
+
 /// HATEOAS links returned with the session. All pay-flow requests use these hrefs (never hardcode).
+/// A tokenization session links only to itself and to tokenize.
 public struct SessionLinks: Decodable, Sendable {
     /// Optional — native Apple Pay does not call this; card-only sessions may omit it (IOS-014).
     public let startPaymentSession: Link?
     public let tokenize: Link
-    public let authorize: Link
+    /// Absent on a tokenization session.
+    public let authorize: Link?
     public let selfLink: Link
-    public let payment: Link
+    /// Absent on a tokenization session.
+    public let payment: Link?
     enum CodingKeys: String, CodingKey {
         case startPaymentSession = "start_payment_session"
         case tokenize, authorize, payment
@@ -133,6 +187,19 @@ public enum MethodStatus: String, Decodable, Sendable {
     case inactive = "INACTIVE"
 }
 
+/// Session `capture_mode`: captured at authorization (`INSTANT`) or later, on fulfilment (`MANUAL`).
+public enum CaptureMode: String, Decodable, Sendable {
+    case instant = "INSTANT"
+    case manual = "MANUAL"
+    /// Unrecognized wire value, so a mode added later on the backend cannot fail the session decode.
+    case unknown = "UNKNOWN"
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = CaptureMode(rawValue: raw) ?? .unknown
+    }
+}
+
 /// Per-payment-method config from the session.
 ///
 /// Runtime wire key for Apple Pay is **`apple_pay`** — that is what hosted checkout and the web
@@ -177,7 +244,9 @@ public struct PaymentMethodLookup: Decodable, Sendable {
     }
 
     public struct CardMethod: Decodable, Sendable {
-        public let status: MethodStatus
+        /// Nil when the session omits it, as a tokenization session does: it needs only the
+        /// public key. A payment session always sends it, and pays only when it is ACTIVE.
+        public let status: MethodStatus?
         public let config: Config?
         /// Optional scheme gate: `{ visa, mastercard, mada }` booleans (web `networks`).
         public let networks: CardNetworks?
@@ -195,7 +264,7 @@ public struct PaymentMethodLookup: Decodable, Sendable {
     /// Shape used when Apple Pay is fully configured (ACTIVE). Matches web
     /// `PaymentMethodLookup[PaymentMethod.APPLE_PAY]` field names under the `apple_pay` session key.
     public struct ApplePayMethod: Decodable, Sendable {
-        public let status: MethodStatus
+        public let status: MethodStatus?
         public let dependencies: Dependencies?
         public let config: Config?
 

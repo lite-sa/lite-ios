@@ -373,8 +373,10 @@ private struct LitePaymentSheetRoot: View {
                     },
                     onPayResult: { payResult in
                         awaitingCoveredPaymentResult = false
-                        // Skip result chrome for user cancel — complete immediately.
-                        if payResult.status == .cancelled {
+                        // Skip result chrome for user cancel, and for a tokenization session,
+                        // which the sheet cannot pay — complete immediately.
+                        if payResult.status == .cancelled
+                            || payResult.errorCode == TokenizeErrorCode.sessionTypeUnsupported {
                             onFinished(payResult)
                             return
                         }

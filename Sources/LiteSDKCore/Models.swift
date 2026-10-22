@@ -115,6 +115,42 @@ public enum CardElementType: String, Sendable, CaseIterable {
 public enum PaymentMethod: String, Sendable {
     case card
     case applePay
+
+    /// The `type` tokenize sends alongside the deprecated `payment_method`. The API names
+    /// instruments in lower snake_case and rejects the camelCase form with a 400 (web `instrumentTypeOf`).
+    public var instrumentType: InstrumentType {
+        switch self {
+        case .card: return .card
+        case .applePay: return .applePay
+        }
+    }
+}
+
+/// What an instrument is, in the API's lower snake_case (web `InstrumentType`).
+public enum InstrumentType: String, Sendable, Equatable, Decodable {
+    case card
+    case iban
+    case applePay = "apple_pay"
+    case googlePay = "google_pay"
+    case samsungPay = "samsung_pay"
+    case maskedPan = "masked_pan"
+    /// Unrecognized wire value — kept so a new instrument type cannot fail the tokenize response.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = InstrumentType(wire: raw)
+    }
+
+    /// Reads `type`, or the deprecated `payment_method`, which names wallets in camelCase.
+    public init(wire: String) {
+        switch wire {
+        case "applePay": self = .applePay
+        case "googlePay": self = .googlePay
+        case "samsungPay": self = .samsungPay
+        default: self = InstrumentType(rawValue: wire) ?? .unknown
+        }
+    }
 }
 
 // MARK: - Backend payment status

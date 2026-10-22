@@ -22,35 +22,41 @@ public struct PaymentService {
 
     // MARK: createInstrument (tokenize)
 
-    /// POST `session._links.tokenize.href` with the encrypted card `data` (the JWE).
-    public func createInstrument(paymentMethod: String, data jwe: String, storeForFuture: Bool) async throws -> LiteInstrument {
+    /// POST `session._links.tokenize.href` with the encrypted card `data` (the JWE), or the Apple
+    /// Pay token JSON. Sends `type` alongside the deprecated `payment_method`.
+    public func createInstrument(paymentMethod: PaymentMethod, data jwe: String, storeForFuture: Bool) async throws -> LiteInstrument {
         guard let holderId = session.customer?.id else {
             throw LiteError.decoding("Session is missing customer.id (required to tokenize).")
         }
         let body = CreateInstrumentRequest(
             holderId: holderId,
-            paymentMethod: paymentMethod,
+            type: paymentMethod.instrumentType.rawValue,
+            paymentMethod: paymentMethod.rawValue,
             holderType: "CUSTOMER",
             data: jwe,
             futureUsage: storeForFuture ? "unscheduled" : nil
         )
-        return try await http.post(
+        let created = try await http.post(
             urlString: session.links.tokenize.href,
             bearer: clientSecret,
             body: body,
-            as: LiteInstrument.self
+            as: CreatedInstrument.self
         )
+        return LiteInstrument(created, tokenized: paymentMethod)
     }
 
     // MARK: authorize (pay)
 
     /// POST `session._links.authorize.href`. Throws if the response has no `payment.id`
-    /// (web `'Payment ID is not found'`).
+    /// (web `'Payment ID is not found'`), or if the session has nothing to pay.
     public func authorize(instrumentId: String, device: Device) async throws -> PaymentResponse {
+        guard let authorize = session.links.authorize else {
+            throw LiteError.sessionTypeUnsupported
+        }
         let response = try await http.post(
-            urlString: session.links.authorize.href,
+            urlString: authorize.href,
             bearer: clientSecret,
-            body: buildPaymentRequest(instrumentId: instrumentId, device: device),
+            body: try buildPaymentRequest(instrumentId: instrumentId, device: device),
             as: PaymentResponse.self
         )
         guard !response.payment.id.isEmpty else {
@@ -68,13 +74,16 @@ public struct PaymentService {
     ///
     /// Propagates `CancellationError` so an aborted `pay()` stops polling promptly.
     public func pollPayment(handledActions: Set<String>) async throws -> PaymentPollingResult {
+        guard let payment = session.links.payment else {
+            throw LiteError.sessionTypeUnsupported
+        }
         let maxRetries = 20
         var lastError: Error?
         for attempt in 1...maxRetries {
             try Task.checkCancellation()
             do {
                 let response = try await http.get(
-                    urlString: session.links.payment.href,
+                    urlString: payment.href,
                     bearer: clientSecret,
                     as: PaymentResponse.self
                 )
@@ -124,7 +133,10 @@ public struct PaymentService {
 
     // MARK: request building
 
-    private func buildPaymentRequest(instrumentId: String, device: Device) -> LitePaymentRequest {
+    func buildPaymentRequest(instrumentId: String, device: Device) throws -> LitePaymentRequest {
+        guard let amount = session.amount, let currency = session.currency else {
+            throw LiteError.sessionTypeUnsupported
+        }
         let customer = session.customer
         let orderBilling = session.order?.billingAddress
 
@@ -177,15 +189,26 @@ public struct PaymentService {
         )
 
         return LitePaymentRequest(
-            amount: session.amount,
-            currency: session.currency,
+            amount: amount,
+            currency: currency,
             processing: .init(processingType: "REGULAR"),
             order: order,
-            captureOptions: .init(captureMode: "INSTANT"),
+            captureOptions: .init(captureMode: captureMode.rawValue),
             paymentInstrument: .init(id: instrumentId),
             customer: customerBody,
             channelId: started.claims.channelId ?? session.channelId,
             device: device
         )
+    }
+
+    // The edge rejects a capture mode that differs from the session token's. Sessions that predate
+    // the field were captured instantly; an unrecognized mode falls back the same way and is left
+    // for the edge to reject.
+    private var captureMode: CaptureMode {
+        if session.captureMode == .manual {
+            return .manual
+        }
+
+        return .instant
     }
 }

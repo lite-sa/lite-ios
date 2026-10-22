@@ -1,7 +1,9 @@
 import Foundation
 
 /// The claims the SDK reads from the session JWT (`secret`).
-/// Matches the web `DecodedJWT.payload`. `sessionId`, `merchantId`, and `iss` are required;
+/// The API issues snake_case claims (`session_id`, `merchant_id`, `channel_id`, `order_id`), as the
+/// web SDK reads them (`@litesa/telemetry` `session-token.ts`); the camelCase spellings are still
+/// accepted so older tokens decode. `sessionId`, `merchantId`, and `iss` are required;
 /// the rest are optional (amount/currency are informational — live values come from the
 /// fetched session, not the token — DESIGN §5.1). `iss` must be a Lite HTTPS host.
 public struct LiteJWTClaims: Sendable, Equatable, Decodable {
@@ -12,6 +14,35 @@ public struct LiteJWTClaims: Sendable, Equatable, Decodable {
     public let orderId: String?
     public let amount: Double?
     public let currency: String?
+}
+
+extension LiteJWTClaims {
+    private enum CodingKeys: String, CodingKey {
+        case session_id, sessionId, merchant_id, merchantId, iss
+        case channel_id, channelId, order_id, orderId, amount, currency
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func either(_ snake: CodingKeys, _ camel: CodingKeys) throws -> String? {
+            try c.decodeIfPresent(String.self, forKey: snake) ?? c.decodeIfPresent(String.self, forKey: camel)
+        }
+        guard let sessionId = try either(.session_id, .sessionId) else {
+            throw DecodingError.keyNotFound(CodingKeys.session_id, .init(codingPath: [], debugDescription: "session_id"))
+        }
+        guard let merchantId = try either(.merchant_id, .merchantId) else {
+            throw DecodingError.keyNotFound(CodingKeys.merchant_id, .init(codingPath: [], debugDescription: "merchant_id"))
+        }
+        self.init(
+            sessionId: sessionId,
+            merchantId: merchantId,
+            iss: try c.decode(String.self, forKey: .iss),
+            channelId: try either(.channel_id, .channelId),
+            orderId: try either(.order_id, .orderId),
+            amount: try c.decodeIfPresent(Double.self, forKey: .amount),
+            currency: try c.decodeIfPresent(String.self, forKey: .currency)
+        )
+    }
 }
 
 public enum JWTError: Error, Equatable {
